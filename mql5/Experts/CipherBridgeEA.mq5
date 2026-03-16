@@ -1,1 +1,482 @@
+// cipher-mt5-bridge/mql5/Experts/CipherBridgeEA.mq5
+//+------------------------------------------------------------------+
+//| CipherBridgeEA.mq5                                                |
+//| Expert Advisor for Cipher MT5 Gateway                             |
+//| Bridges MT5 terminal ↔ C++ DLL ↔ TCP ↔ Rust CMG Gateway          |
+//+------------------------------------------------------------------+
+#property copyright "CipherTrade"
+#property version   "1.00"
+#property strict
 
+#include <CipherBridge.mqh>
+#include <Trade\Trade.mqh>
+
+// ============================================================================
+// Input parameters
+// ============================================================================
+input int    InpBridgePort       = 8765;    // TCP port for gateway connection
+input int    InpTimerMs          = 10;      // Command poll interval (ms)
+input bool   InpLogVerbose       = false;   // Verbose logging
+
+// ============================================================================
+// Globals
+// ============================================================================
+CTrade g_trade;
+bool   g_initialized = false;
+
+//+------------------------------------------------------------------+
+//| Expert initialization                                             |
+//+------------------------------------------------------------------+
+int OnInit() {
+   // Allow DLL imports
+   if (!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED)) {
+      Alert("CipherBridge: DLL imports must be enabled! Enable in Tools → Options → Expert Advisors");
+      return INIT_FAILED;
+   }
+
+   // Initialize the bridge DLL
+   int result = BridgeInit(InpBridgePort);
+   if (result == 0) {
+      Alert("CipherBridge: Failed to initialize bridge on port " + IntegerToString(InpBridgePort));
+      return INIT_FAILED;
+   }
+
+   // Set millisecond timer for command polling
+   if (!EventSetMillisecondTimer(InpTimerMs)) {
+      Print("CipherBridge: Failed to set ms timer, falling back to 1s timer");
+      EventSetTimer(1);
+   }
+
+   // Configure trade object
+   g_trade.SetExpertMagicNumber(0);
+   g_trade.SetDeviationInPoints(10);
+   g_trade.SetTypeFilling(ORDER_FILLING_IOC);
+   g_trade.SetAsyncMode(false);
+
+   g_initialized = true;
+   Print("CipherBridge: EA initialized, listening on port ", InpBridgePort);
+
+   return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization                                           |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason) {
+   EventKillTimer();
+
+   if (g_initialized) {
+      BridgeShutdown();
+      g_initialized = false;
+      Print("CipherBridge: EA deinitialized, reason=", reason);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Tick handler — push market data for subscribed symbols            |
+//+------------------------------------------------------------------+
+void OnTick() {
+   if (!g_initialized) return;
+   if (!BridgeIsClientConnected()) return;
+
+   // Push tick for the current chart symbol
+   string sym = Symbol();
+   MqlTick tick;
+   if (SymbolInfoTick(sym, tick)) {
+      BridgePushTick(sym, tick.bid, tick.ask, tick.last,
+                     tick.volume, (long)(tick.time_msc));
+   }
+
+   // Push ticks for all other subscribed symbols
+   int count = BridgeGetSubscribedSymbolCount();
+   for (int i = 0; i < count; i++) {
+      string subSym = "";
+      StringInit(subSym, 64);
+      if (BridgeGetSubscribedSymbol(i, subSym) && subSym != sym && subSym != "") {
+         MqlTick subTick;
+         if (SymbolInfoTick(subSym, subTick)) {
+            BridgePushTick(subSym, subTick.bid, subTick.ask, subTick.last,
+                           subTick.volume, (long)(subTick.time_msc));
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Timer handler — poll for commands from the gateway                |
+//+------------------------------------------------------------------+
+void OnTimer() {
+   if (!g_initialized) return;
+
+   // Drain bridge log messages
+   DrainLogMessages();
+
+   // Process up to 32 commands per timer tick to prevent queue buildup
+   for (int batch = 0; batch < 32; batch++) {
+      string requestId = "";
+      StringInit(requestId, 128);
+      string paramsJson = "";
+      StringInit(paramsJson, 8192);
+
+      int cmdType = BridgePollCommand(requestId, paramsJson);
+      if (cmdType == CMD_NONE) break;
+
+      if (InpLogVerbose)
+         Print("CipherBridge: cmd=", cmdType, " reqId=", requestId);
+
+      ProcessCommand(cmdType, requestId, paramsJson);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Drain and print DLL log messages                                  |
+//+------------------------------------------------------------------+
+void DrainLogMessages() {
+   for (int i = 0; i < 10; i++) {
+      string msg = "";
+      StringInit(msg, 512);
+      if (!BridgeGetLogMessage(msg)) break;
+      if (msg != "")
+         Print("CipherBridge[DLL]: ", msg);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Dispatch a command to the appropriate handler                     |
+//+------------------------------------------------------------------+
+void ProcessCommand(int cmdType, string requestId, string paramsJson) {
+   switch (cmdType) {
+      case CMD_PING:
+         HandlePing(requestId);
+         break;
+      case CMD_STATUS:
+         HandleStatus(requestId);
+         break;
+      case CMD_SUBSCRIBE:
+         HandleSubscribe(requestId, paramsJson);
+         break;
+      case CMD_UNSUBSCRIBE:
+         HandleUnsubscribe(requestId, paramsJson);
+         break;
+      case CMD_GET_ACCOUNT_INFO:
+         HandleGetAccountInfo(requestId);
+         break;
+      case CMD_GET_SYMBOL_INFO:
+         HandleGetSymbolInfo(requestId, paramsJson);
+         break;
+      case CMD_GET_HISTORY:
+         HandleGetHistory(requestId, paramsJson);
+         break;
+      case CMD_PLACE_ORDER:
+         HandlePlaceOrder(requestId, paramsJson);
+         break;
+      case CMD_CLOSE_ORDER:
+         HandleCloseOrder(requestId, paramsJson);
+         break;
+      case CMD_MODIFY_ORDER:
+         HandleModifyOrder(requestId, paramsJson);
+         break;
+      case CMD_GET_POSITIONS:
+         HandleGetPositions(requestId);
+         break;
+      case CMD_GET_ORDERS:
+         HandleGetOrders(requestId);
+         break;
+      default:
+         BridgePushResponse(BuildError(-1, "Unknown command type: " + IntegerToString(cmdType)));
+         break;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| CMD_PING                                                          |
+//+------------------------------------------------------------------+
+void HandlePing(string requestId) {
+   long timestamp = (long)TimeCurrent();
+   BridgePushResponse(BuildPong(requestId, timestamp));
+}
+
+//+------------------------------------------------------------------+
+//| CMD_STATUS                                                        |
+//+------------------------------------------------------------------+
+void HandleStatus(string requestId) {
+   bool connected = TerminalInfoInteger(TERMINAL_CONNECTED) != 0;
+   string terminal = TerminalInfoString(TERMINAL_NAME);
+   string server   = AccountInfoString(ACCOUNT_SERVER);
+   long   account  = AccountInfoInteger(ACCOUNT_LOGIN);
+   long   uptime   = (long)(GetTickCount64() / 1000);
+   int    symCount = SymbolsTotal(true);
+
+   string response = "{\"type\":\"Status\",\"data\":{"
+      "\"connected\":" + (connected ? "true" : "false") + ","
+      "\"terminal\":\"" + JsonEscape(terminal) + "\","
+      "\"server\":\"" + JsonEscape(server) + "\","
+      "\"account\":" + IntegerToString(account) + ","
+      "\"uptime\":" + IntegerToString(uptime) + ","
+      "\"symbols_count\":" + IntegerToString(symCount) +
+      "}}";
+
+   BridgePushResponse(response);
+}
+
+//+------------------------------------------------------------------+
+//| CMD_SUBSCRIBE                                                     |
+//+------------------------------------------------------------------+
+void HandleSubscribe(string requestId, string paramsJson) {
+   string symbols[];
+   int count = JsonGetStringArray(paramsJson, "symbols", symbols);
+   string timeframe = JsonGetString(paramsJson, "timeframe");
+
+   // Ensure all symbols are visible in Market Watch
+   for (int i = 0; i < count; i++) {
+      if (!SymbolSelect(symbols[i], true)) {
+         Print("CipherBridge: Failed to select symbol: ", symbols[i]);
+      }
+   }
+
+   BridgePushResponse(BuildSubscribed(requestId, symbols, timeframe));
+   Print("CipherBridge: Subscribed to ", count, " symbols");
+}
+
+//+------------------------------------------------------------------+
+//| CMD_UNSUBSCRIBE                                                   |
+//+------------------------------------------------------------------+
+void HandleUnsubscribe(string requestId, string paramsJson) {
+   string symbols[];
+   int count = JsonGetStringArray(paramsJson, "symbols", symbols);
+
+   BridgePushResponse(BuildUnsubscribed(requestId, symbols));
+   Print("CipherBridge: Unsubscribed from ", count, " symbols");
+}
+
+//+------------------------------------------------------------------+
+//| CMD_GET_ACCOUNT_INFO                                              |
+//+------------------------------------------------------------------+
+void HandleGetAccountInfo(string requestId) {
+   BridgePushResponse(BuildAccountInfo(requestId));
+}
+
+//+------------------------------------------------------------------+
+//| CMD_GET_SYMBOL_INFO                                               |
+//+------------------------------------------------------------------+
+void HandleGetSymbolInfo(string requestId, string paramsJson) {
+   string symbol = JsonGetString(paramsJson, "symbol");
+   if (symbol == "") {
+      BridgePushResponse(BuildError(-1, "Missing symbol parameter"));
+      return;
+   }
+   BridgePushResponse(BuildSymbolInfo(requestId, symbol));
+}
+
+//+------------------------------------------------------------------+
+//| CMD_GET_HISTORY                                                   |
+//+------------------------------------------------------------------+
+void HandleGetHistory(string requestId, string paramsJson) {
+   string symbol    = JsonGetString(paramsJson, "symbol");
+   string timeframe = JsonGetString(paramsJson, "timeframe");
+   long   fromTime  = JsonGetLong(paramsJson, "from");
+   long   toTime    = JsonGetLong(paramsJson, "to");
+
+   if (symbol == "" || timeframe == "") {
+      BridgePushResponse(BuildError(-1, "Missing symbol or timeframe"));
+      return;
+   }
+
+   ENUM_TIMEFRAMES tf = StringToTimeframe(timeframe);
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates, false);
+
+   int copied = CopyRates(symbol, tf, (datetime)fromTime, (datetime)toTime, rates);
+   if (copied < 0) {
+      int err = GetLastError();
+      BridgePushResponse(BuildError(err, "CopyRates failed: " + IntegerToString(err)));
+      return;
+   }
+
+   BridgePushResponse(BuildHistoryData(requestId, symbol, timeframe, rates, copied));
+
+   if (InpLogVerbose)
+      Print("CipherBridge: History ", symbol, " ", timeframe, ": ", copied, " bars");
+}
+
+//+------------------------------------------------------------------+
+//| CMD_PLACE_ORDER                                                   |
+//+------------------------------------------------------------------+
+void HandlePlaceOrder(string requestId, string paramsJson) {
+   string symbol    = JsonGetString(paramsJson, "symbol");
+   string side      = JsonGetString(paramsJson, "side");
+   string orderType = JsonGetString(paramsJson, "order_type");
+   double volume    = JsonGetDouble(paramsJson, "volume");
+   double price     = JsonGetDouble(paramsJson, "price");
+   double sl        = JsonGetDouble(paramsJson, "sl");
+   double tp        = JsonGetDouble(paramsJson, "tp");
+   string comment   = JsonGetString(paramsJson, "comment");
+   long   magic     = JsonGetLong(paramsJson, "magic");
+
+   if (symbol == "" || side == "" || volume <= 0) {
+      BridgePushResponse(BuildOrderResult(requestId, 0, false, "Missing required parameters"));
+      return;
+   }
+
+   // Ensure symbol is selected
+   if (!SymbolSelect(symbol, true)) {
+      BridgePushResponse(BuildOrderResult(requestId, 0, false, "Symbol not available: " + symbol));
+      return;
+   }
+
+   ENUM_ORDER_TYPE type = ParseOrderType(side, orderType);
+
+   // Set magic number if provided
+   if (magic > 0) g_trade.SetExpertMagicNumber(magic);
+
+   // For market orders, get current price if not provided
+   if (orderType == "market" && (price == 0.0 || price == EMPTY_VALUE)) {
+      if (side == "buy")
+         price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+      else
+         price = SymbolInfoDouble(symbol, SYMBOL_BID);
+   }
+
+   bool success = false;
+
+   if (orderType == "market") {
+      if (side == "buy")
+         success = g_trade.Buy(volume, symbol, price, sl, tp, comment);
+      else
+         success = g_trade.Sell(volume, symbol, price, sl, tp, comment);
+   } else {
+      // Pending order
+      success = g_trade.OrderOpen(symbol, type, volume, 0.0, price, sl, tp,
+                                  ORDER_TIME_GTC, 0, comment);
+   }
+
+   if (success) {
+      ulong ticket = g_trade.ResultOrder();
+      if (ticket == 0) ticket = g_trade.ResultDeal();
+      BridgePushResponse(BuildOrderResult(requestId, (long)ticket, true));
+      Print("CipherBridge: Order placed, ticket=", ticket);
+   } else {
+      uint retcode = g_trade.ResultRetcode();
+      string errMsg = "Order failed [" + IntegerToString(retcode) + "]: " +
+                      g_trade.ResultRetcodeDescription();
+      BridgePushResponse(BuildOrderResult(requestId, 0, false, errMsg));
+      Print("CipherBridge: ", errMsg);
+   }
+
+   // Reset magic
+   g_trade.SetExpertMagicNumber(0);
+}
+
+//+------------------------------------------------------------------+
+//| CMD_CLOSE_ORDER                                                   |
+//+------------------------------------------------------------------+
+void HandleCloseOrder(string requestId, string paramsJson) {
+   long   ticket = JsonGetLong(paramsJson, "ticket");
+   double volume = JsonGetDouble(paramsJson, "volume");
+
+   if (ticket <= 0) {
+      BridgePushResponse(BuildOrderResult(requestId, 0, false, "Invalid ticket"));
+      return;
+   }
+
+   // Select the position
+   if (!PositionSelectByTicket((ulong)ticket)) {
+      // Maybe it's a pending order
+      if (OrderSelect((ulong)ticket)) {
+         bool success = g_trade.OrderDelete((ulong)ticket);
+         if (success) {
+            BridgePushResponse(BuildOrderResult(requestId, ticket, true));
+         } else {
+            BridgePushResponse(BuildOrderResult(requestId, ticket, false,
+               "Failed to delete order: " + g_trade.ResultRetcodeDescription()));
+         }
+         return;
+      }
+      BridgePushResponse(BuildOrderResult(requestId, ticket, false, "Position/order not found"));
+      return;
+   }
+
+   bool success = false;
+
+   if (volume > 0 && volume < PositionGetDouble(POSITION_VOLUME)) {
+      // Partial close
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      int    type   = (int)PositionGetInteger(POSITION_TYPE);
+
+      if (type == POSITION_TYPE_BUY)
+         success = g_trade.Sell(volume, symbol, 0, 0, 0, "Partial close");
+      else
+         success = g_trade.Buy(volume, symbol, 0, 0, 0, "Partial close");
+   } else {
+      // Full close
+      success = g_trade.PositionClose((ulong)ticket);
+   }
+
+   if (success) {
+      BridgePushResponse(BuildOrderResult(requestId, ticket, true));
+      Print("CipherBridge: Position closed, ticket=", ticket);
+   } else {
+      BridgePushResponse(BuildOrderResult(requestId, ticket, false,
+         "Close failed: " + g_trade.ResultRetcodeDescription()));
+   }
+}
+
+//+------------------------------------------------------------------+
+//| CMD_MODIFY_ORDER                                                  |
+//+------------------------------------------------------------------+
+void HandleModifyOrder(string requestId, string paramsJson) {
+   long   ticket = JsonGetLong(paramsJson, "ticket");
+   double price  = JsonGetDouble(paramsJson, "price");
+   double sl     = JsonGetDouble(paramsJson, "sl");
+   double tp     = JsonGetDouble(paramsJson, "tp");
+
+   if (ticket <= 0) {
+      BridgePushResponse(BuildOrderResult(requestId, 0, false, "Invalid ticket"));
+      return;
+   }
+
+   bool success = false;
+
+   // Try as position first
+   if (PositionSelectByTicket((ulong)ticket)) {
+      success = g_trade.PositionModify((ulong)ticket, sl, tp);
+   }
+   // Try as pending order
+   else if (OrderSelect((ulong)ticket)) {
+      double currentPrice = (price > 0) ? price : OrderGetDouble(ORDER_PRICE_OPEN);
+      double currentSl    = (sl > 0) ? sl : OrderGetDouble(ORDER_SL);
+      double currentTp    = (tp > 0) ? tp : OrderGetDouble(ORDER_TP);
+      datetime expiry     = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
+
+      success = g_trade.OrderModify((ulong)ticket, currentPrice, currentSl, currentTp,
+                                     ORDER_TIME_GTC, expiry);
+   }
+   else {
+      BridgePushResponse(BuildOrderResult(requestId, ticket, false, "Position/order not found"));
+      return;
+   }
+
+   if (success) {
+      BridgePushResponse(BuildOrderResult(requestId, ticket, true));
+   } else {
+      BridgePushResponse(BuildOrderResult(requestId, ticket, false,
+         "Modify failed: " + g_trade.ResultRetcodeDescription()));
+   }
+}
+
+//+------------------------------------------------------------------+
+//| CMD_GET_POSITIONS                                                 |
+//+------------------------------------------------------------------+
+void HandleGetPositions(string requestId) {
+   BridgePushResponse(BuildPositions(requestId));
+}
+
+//+------------------------------------------------------------------+
+//| CMD_GET_ORDERS                                                    |
+//+------------------------------------------------------------------+
+void HandleGetOrders(string requestId) {
+   BridgePushResponse(BuildOrders(requestId));
+}
+
+//+------------------------------------------------------------------+
