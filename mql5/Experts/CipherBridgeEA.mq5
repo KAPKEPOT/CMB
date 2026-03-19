@@ -1,9 +1,7 @@
 // cipher-mt5-bridge/mql5/Experts/CipherBridgeEA.mq5
-//+------------------------------------------------------------------+
-//| CipherBridgeEA.mq5                                                |
-//| Expert Advisor for Cipher MT5 Gateway                             |
-//| Bridges MT5 terminal ↔ C++ DLL ↔ TCP ↔ Rust CMG Gateway          |
-//+------------------------------------------------------------------+
+// CipherBridgeEA.mq5  
+// Expert Advisor for Cipher MT5 Gateway
+// Bridges MT5 terminal ↔ C++ DLL ↔ TCP ↔ Rust CMG Gateway
 #property copyright "CipherTrade"
 #property version   "1.00"
 #property strict
@@ -11,22 +9,16 @@
 #include <CipherBridge.mqh>
 #include <Trade\Trade.mqh>
 
-// ============================================================================
 // Input parameters
-// ============================================================================
 input int    InpBridgePort       = 8765;    // TCP port for gateway connection
 input int    InpTimerMs          = 10;      // Command poll interval (ms)
 input bool   InpLogVerbose       = false;   // Verbose logging
 
-// ============================================================================
 // Globals
-// ============================================================================
 CTrade g_trade;
 bool   g_initialized = false;
 
-//+------------------------------------------------------------------+
-//| Expert initialization                                             |
-//+------------------------------------------------------------------+
+//| Expert initialization
 int OnInit() {
    // Allow DLL imports
    if (!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED)) {
@@ -59,9 +51,7 @@ int OnInit() {
    return INIT_SUCCEEDED;
 }
 
-//+------------------------------------------------------------------+
-//| Expert deinitialization                                           |
-//+------------------------------------------------------------------+
+//| Expert deinitialization
 void OnDeinit(const int reason) {
    EventKillTimer();
 
@@ -72,14 +62,14 @@ void OnDeinit(const int reason) {
    }
 }
 
-//+------------------------------------------------------------------+
-//| Tick handler — push market data for subscribed symbols            |
-//+------------------------------------------------------------------+
+
+// Tick handler — push market data for subscribed symbols            |
+
 void OnTick() {
    if (!g_initialized) return;
    if (!BridgeIsClientConnected()) return;
 
-   // Push tick for the current chart symbol
+   // Push tick for the current chart symbol (immediate, on actual tick)
    string sym = Symbol();
    MqlTick tick;
    if (SymbolInfoTick(sym, tick)) {
@@ -102,14 +92,17 @@ void OnTick() {
    }
 }
 
-//+------------------------------------------------------------------+
-//| Timer handler — poll for commands from the gateway                |
-//+------------------------------------------------------------------+
+// Timer handler — poll subscribed symbols + process commands
 void OnTimer() {
    if (!g_initialized) return;
 
    // Drain bridge log messages
    DrainLogMessages();
+
+   // Push ticks for all subscribed symbols (runs every InpTimerMs)
+   if (BridgeIsClientConnected()) {
+      PushSubscribedTicks();
+   }
 
    // Process up to 32 commands per timer tick to prevent queue buildup
    for (int batch = 0; batch < 32; batch++) {
@@ -128,9 +121,7 @@ void OnTimer() {
    }
 }
 
-//+------------------------------------------------------------------+
-//| Drain and print DLL log messages                                  |
-//+------------------------------------------------------------------+
+//| Drain and print DLL log messages
 void DrainLogMessages() {
    for (int i = 0; i < 10; i++) {
       string msg = "";
@@ -141,17 +132,40 @@ void DrainLogMessages() {
    }
 }
 
-//+------------------------------------------------------------------+
-//| Dispatch a command to the appropriate handler                     |
-//+------------------------------------------------------------------+
+
+// Push ticks for all subscribed symbols (called from OnTimer)       
+void PushSubscribedTicks() {
+   string chartSym = Symbol();
+   int count = BridgeGetSubscribedSymbolCount();
+   for (int i = 0; i < count; i++) {
+      string subSym = "";
+      StringInit(subSym, 64);
+      if (BridgeGetSubscribedSymbol(i, subSym) && subSym != "" && subSym != chartSym) {
+         MqlTick subTick;
+         if (SymbolInfoTick(subSym, subTick)) {
+            BridgePushTick(subSym, subTick.bid, subTick.ask, subTick.last,
+                           subTick.volume, (long)(subTick.time_msc));
+         }
+      }
+   }
+}
+
+
+//| Dispatch a command to the appropriate handler                    
 void ProcessCommand(int cmdType, string requestId, string paramsJson) {
-   switch (cmdType) {
+   switch (cmdType) {     
       case CMD_PING:
          HandlePing(requestId);
          break;
       case CMD_STATUS:
          HandleStatus(requestId);
          break;
+      case CMD_CONNECT:
+      	HandleConnect(requestId, paramsJson);
+      	break;
+      case CMD_DISCONNECT:
+      	HandleDisconnect(requestId);
+      	break;
       case CMD_SUBSCRIBE:
          HandleSubscribe(requestId, paramsJson);
          break;
@@ -188,17 +202,15 @@ void ProcessCommand(int cmdType, string requestId, string paramsJson) {
    }
 }
 
-//+------------------------------------------------------------------+
-//| CMD_PING                                                          |
-//+------------------------------------------------------------------+
+
+// CMD_PING 
 void HandlePing(string requestId) {
    long timestamp = (long)TimeCurrent();
    BridgePushResponse(BuildPong(requestId, timestamp));
 }
 
-//+------------------------------------------------------------------+
-//| CMD_STATUS                                                        |
-//+------------------------------------------------------------------+
+
+// CMD_STATUS 
 void HandleStatus(string requestId) {
    bool connected = TerminalInfoInteger(TERMINAL_CONNECTED) != 0;
    string terminal = TerminalInfoString(TERMINAL_NAME);
@@ -219,9 +231,45 @@ void HandleStatus(string requestId) {
    BridgePushResponse(response);
 }
 
-//+------------------------------------------------------------------+
-//| CMD_SUBSCRIBE                                                     |
-//+------------------------------------------------------------------+
+//| CMD_CONNECT
+void HandleConnect(string requestId, string paramsJson) {
+   // The EA is already connected to MT5 by virtue of running in the terminal.
+   // This command acknowledges the gateway's connection request and returns
+   // the current account info as a ConnectResult.
+   bool connected = TerminalInfoInteger(TERMINAL_CONNECTED) != 0;
+   long   account  = AccountInfoInteger(ACCOUNT_LOGIN);
+   string name     = AccountInfoString(ACCOUNT_NAME);
+   double balance  = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity   = AccountInfoDouble(ACCOUNT_EQUITY);
+
+   string errorVal = "null";
+   if (!connected)
+      errorVal = "\"Terminal not connected to trade server\"";
+
+   string response = "{\"type\":\"ConnectResult\",\"data\":{"
+      "\"request_id\":\"" + JsonEscape(requestId) + "\","
+      "\"success\":" + (connected ? "true" : "false") + ","
+      "\"account\":" + IntegerToString(account) + ","
+      "\"name\":\"" + JsonEscape(name) + "\","
+      "\"balance\":" + JsonDouble(balance, 2) + ","
+      "\"equity\":" + JsonDouble(equity, 2) + ","
+      "\"error\":" + errorVal +
+      "}}";
+
+   BridgePushResponse(response);
+   Print("CipherBridge: Connect request handled, account=", account);
+}
+
+// CMD_DISCONNECT
+void HandleDisconnect(string requestId) {
+   string response = "{\"type\":\"DisconnectResult\",\"data\":{"
+      "\"success\":true"
+      "}}";
+   BridgePushResponse(response);
+   Print("CipherBridge: Disconnect request acknowledged");
+}
+
+// CMD_SUBSCRIBE
 void HandleSubscribe(string requestId, string paramsJson) {
    string symbols[];
    int count = JsonGetStringArray(paramsJson, "symbols", symbols);
@@ -238,9 +286,8 @@ void HandleSubscribe(string requestId, string paramsJson) {
    Print("CipherBridge: Subscribed to ", count, " symbols");
 }
 
-//+------------------------------------------------------------------+
-//| CMD_UNSUBSCRIBE                                                   |
-//+------------------------------------------------------------------+
+
+// CMD_UNSUBSCRIBE
 void HandleUnsubscribe(string requestId, string paramsJson) {
    string symbols[];
    int count = JsonGetStringArray(paramsJson, "symbols", symbols);
@@ -249,16 +296,13 @@ void HandleUnsubscribe(string requestId, string paramsJson) {
    Print("CipherBridge: Unsubscribed from ", count, " symbols");
 }
 
-//+------------------------------------------------------------------+
-//| CMD_GET_ACCOUNT_INFO                                              |
-//+------------------------------------------------------------------+
+//| CMD_GET_ACCOUNT_INFO
 void HandleGetAccountInfo(string requestId) {
    BridgePushResponse(BuildAccountInfo(requestId));
 }
 
-//+------------------------------------------------------------------+
-//| CMD_GET_SYMBOL_INFO                                               |
-//+------------------------------------------------------------------+
+
+// CMD_GET_SYMBOL_INFO
 void HandleGetSymbolInfo(string requestId, string paramsJson) {
    string symbol = JsonGetString(paramsJson, "symbol");
    if (symbol == "") {
@@ -268,9 +312,7 @@ void HandleGetSymbolInfo(string requestId, string paramsJson) {
    BridgePushResponse(BuildSymbolInfo(requestId, symbol));
 }
 
-//+------------------------------------------------------------------+
-//| CMD_GET_HISTORY                                                   |
-//+------------------------------------------------------------------+
+//| CMD_GET_HISTORY
 void HandleGetHistory(string requestId, string paramsJson) {
    string symbol    = JsonGetString(paramsJson, "symbol");
    string timeframe = JsonGetString(paramsJson, "timeframe");
@@ -300,9 +342,8 @@ void HandleGetHistory(string requestId, string paramsJson) {
       Print("CipherBridge: History ", symbol, " ", timeframe, ": ", copied, " bars");
 }
 
-//+------------------------------------------------------------------+
-//| CMD_PLACE_ORDER                                                   |
-//+------------------------------------------------------------------+
+
+// CMD_PLACE_ORDER
 void HandlePlaceOrder(string requestId, string paramsJson) {
    string symbol    = JsonGetString(paramsJson, "symbol");
    string side      = JsonGetString(paramsJson, "side");
@@ -368,9 +409,7 @@ void HandlePlaceOrder(string requestId, string paramsJson) {
    g_trade.SetExpertMagicNumber(0);
 }
 
-//+------------------------------------------------------------------+
-//| CMD_CLOSE_ORDER                                                   |
-//+------------------------------------------------------------------+
+//| CMD_CLOSE_ORDER
 void HandleCloseOrder(string requestId, string paramsJson) {
    long   ticket = JsonGetLong(paramsJson, "ticket");
    double volume = JsonGetDouble(paramsJson, "volume");
@@ -422,9 +461,7 @@ void HandleCloseOrder(string requestId, string paramsJson) {
    }
 }
 
-//+------------------------------------------------------------------+
-//| CMD_MODIFY_ORDER                                                  |
-//+------------------------------------------------------------------+
+// CMD_MODIFY_ORDER
 void HandleModifyOrder(string requestId, string paramsJson) {
    long   ticket = JsonGetLong(paramsJson, "ticket");
    double price  = JsonGetDouble(paramsJson, "price");
@@ -465,18 +502,12 @@ void HandleModifyOrder(string requestId, string paramsJson) {
    }
 }
 
-//+------------------------------------------------------------------+
-//| CMD_GET_POSITIONS                                                 |
-//+------------------------------------------------------------------+
+//| CMD_GET_POSITIONS
 void HandleGetPositions(string requestId) {
    BridgePushResponse(BuildPositions(requestId));
 }
 
-//+------------------------------------------------------------------+
-//| CMD_GET_ORDERS                                                    |
-//+------------------------------------------------------------------+
+//| CMD_GET_ORDERS
 void HandleGetOrders(string requestId) {
    BridgePushResponse(BuildOrders(requestId));
 }
-
-//+------------------------------------------------------------------+
