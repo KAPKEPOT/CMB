@@ -19,9 +19,7 @@
 #include "tcp_server.h"
 #include "protocol.h"
 
-// ============================================================================
 // Globals
-// ============================================================================
 
 static std::unique_ptr<cipher::TcpServer>           g_server;
 static cipher::ThreadSafeQueue<cipher::ParsedCommand> g_command_queue;
@@ -34,9 +32,7 @@ static std::atomic<bool>                             g_initialized{false};
 static std::thread g_sender_thread;
 static std::atomic<bool> g_sender_running{false};
 
-// ============================================================================
 // UTF-16 ↔ UTF-8 conversion helpers
-// ============================================================================
 
 static std::string wstr_to_utf8(const wchar_t* wstr) {
     if (!wstr || !wstr[0]) return "";
@@ -59,9 +55,7 @@ static void utf8_to_wstr(const std::string& utf8, wchar_t* out, int out_size) {
     }
 }
 
-// ============================================================================
 // Response sender thread
-// ============================================================================
 
 static void sender_thread_func() {
     while (g_sender_running) {
@@ -80,9 +74,7 @@ static void sender_thread_func() {
     }
 }
 
-// ============================================================================
 // Incoming line handler (called from TCP reader thread)
-// ============================================================================
 
 static void on_incoming_line(const std::string& line) {
     auto cmd = cipher::parse_command(line);
@@ -125,9 +117,7 @@ static void on_incoming_line(const std::string& line) {
     g_command_queue.push(std::move(cmd));
 }
 
-// ============================================================================
 // DLL entry point
-// ============================================================================
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     switch (reason) {
@@ -148,9 +138,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     return TRUE;
 }
 
-// ============================================================================
 // Exported functions
-// ============================================================================
 
 int BRIDGE_CALL BridgeInit(int port) {
     if (g_initialized) {

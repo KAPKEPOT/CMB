@@ -62,9 +62,7 @@ ParsedCommand parse_command(const std::string& json_line) {
     return cmd;
 }
 
-// ============================================================================
 // Helper to wrap type + data
-// ============================================================================
 static std::string wrap_response(const std::string& type, const json& data) {
     json envelope;
     envelope["type"] = type;
@@ -78,9 +76,7 @@ static std::string wrap_response_no_data(const std::string& type) {
     return envelope.dump();
 }
 
-// ============================================================================
 // Response builders
-// ============================================================================
 
 std::string build_pong(const std::string& request_id, long long timestamp) {
     json data;
