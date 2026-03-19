@@ -18,18 +18,14 @@ namespace cipher {
 
 using json = nlohmann::json;
 
-// ============================================================================
 // Parse incoming JSON line into a ParsedCommand
-// ============================================================================
 
 // Parses a CommandEnvelope:
 //   {"request_id": "uuid", "type": "PlaceOrder", "data": {...}}
 // Returns CMD_NONE on parse failure.
 ParsedCommand parse_command(const std::string& json_line);
 
-// ============================================================================
 // Build outgoing JSON response strings
-// ============================================================================
 
 // These match BridgeResponse's #[serde(tag = "type", content = "data")] format:
 //   {"type": "Pong", "data": {"request_id": "uuid", "timestamp": 123456}}

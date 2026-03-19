@@ -14,18 +14,14 @@
 
 namespace cipher {
 
-// ============================================================================
 // Parsed command from the gateway
-// ============================================================================
 struct ParsedCommand {
     int type;                    // BridgeCommandType enum
     std::string request_id;
     std::string params_json;     // Raw JSON of the "data" field
 };
 
-// ============================================================================
 // Thread-safe queue
-// ============================================================================
 template<typename T>
 class ThreadSafeQueue {
 public:
@@ -85,9 +81,7 @@ private:
     std::queue<T> queue_;
 };
 
-// ============================================================================
 // Subscription tracker (thread-safe)
-// ============================================================================
 class SubscriptionTracker {
 public:
     void add(const std::vector<std::string>& symbols) {
@@ -136,9 +130,7 @@ private:
     std::set<std::string> symbols_;
 };
 
-// ============================================================================
 // Log message queue
-// ============================================================================
 class LogQueue {
 public:
     void log(const std::string& msg) {
