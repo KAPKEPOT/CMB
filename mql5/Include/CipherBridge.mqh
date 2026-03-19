@@ -1,14 +1,12 @@
 // cipher-mt5-bridge/mql5/Include/CipherBridge.mqh
-//+------------------------------------------------------------------+
-//| CipherBridge.mqh - DLL imports and JSON helper functions          |
-//| Part of Cipher MT5 Gateway bridge                                 |
-//+------------------------------------------------------------------+
+
+// CipherBridge.mqh - DLL imports and JSON helper functions    
+// Part of Cipher MT5 Gateway bridge
+
 #ifndef CIPHER_BRIDGE_MQH
 #define CIPHER_BRIDGE_MQH
 
-// ============================================================================
 // DLL Imports
-// ============================================================================
 #import "CipherBridge.dll"
 int    BridgeInit(int port);
 void   BridgeShutdown();
@@ -25,9 +23,8 @@ int    BridgeGetSubscribedSymbol(int index, string &symbol);
 int    BridgeGetLogMessage(string &message);
 #import
 
-// ============================================================================
+
 // Command type constants (must match BridgeCommandType enum in C++)
-// ============================================================================
 #define CMD_NONE               0
 #define CMD_PING               1
 #define CMD_STATUS             2
@@ -44,11 +41,9 @@ int    BridgeGetLogMessage(string &message);
 #define CMD_GET_POSITIONS      13
 #define CMD_GET_ORDERS         14
 
-// ============================================================================
 // JSON builder helpers
 // These build JSON strings for BridgeResponse format:
 //   {"type":"<Type>","data":{...}}
-// ============================================================================
 
 //--- Escape a string for safe JSON embedding
 string JsonEscape(string s) {
@@ -60,12 +55,12 @@ string JsonEscape(string s) {
    return s;
 }
 
-//--- Format a double with proper precision, avoiding trailing zeros
+// Format a double with proper precision, avoiding trailing zeros
 string JsonDouble(double val, int digits = 8) {
    return DoubleToString(val, digits);
 }
 
-//--- Build a Pong response
+// Build a Pong response
 string BuildPong(string requestId, long timestamp) {
    return "{\"type\":\"Pong\",\"data\":{"
           "\"request_id\":\"" + JsonEscape(requestId) + "\","
@@ -73,7 +68,7 @@ string BuildPong(string requestId, long timestamp) {
           "}}";
 }
 
-//--- Build a Subscribed response
+// Build a Subscribed response
 string BuildSubscribed(string requestId, string &symbols[], string timeframe = "") {
    string syms = "[";
    for (int i = 0; i < ArraySize(symbols); i++) {
@@ -95,7 +90,7 @@ string BuildSubscribed(string requestId, string &symbols[], string timeframe = "
           "}}";
 }
 
-//--- Build an Unsubscribed response
+// Build an Unsubscribed response
 string BuildUnsubscribed(string requestId, string &symbols[]) {
    string syms = "[";
    for (int i = 0; i < ArraySize(symbols); i++) {
@@ -110,7 +105,7 @@ string BuildUnsubscribed(string requestId, string &symbols[]) {
           "}}";
 }
 
-//--- Build an AccountInfo response
+// Build an AccountInfo response
 string BuildAccountInfo(string requestId) {
    long   login      = AccountInfoInteger(ACCOUNT_LOGIN);
    string name       = AccountInfoString(ACCOUNT_NAME);
@@ -138,7 +133,7 @@ string BuildAccountInfo(string requestId) {
           "}}";
 }
 
-//--- Build a SymbolInfo response
+// Build a SymbolInfo response
 string BuildSymbolInfo(string requestId, string symbol) {
    if (!SymbolSelect(symbol, true)) {
       return "{\"type\":\"Error\",\"data\":{\"code\":-1,\"message\":\"Symbol not found: " + JsonEscape(symbol) + "\"}}";
@@ -199,7 +194,7 @@ string BuildSymbolInfo(string requestId, string symbol) {
           "}}";
 }
 
-//--- Build a HistoryData response
+// Build a HistoryData response
 string BuildHistoryData(string requestId, string symbol, string timeframe, MqlRates &rates[], int count) {
    string bars = "[";
    for (int i = 0; i < count; i++) {
@@ -225,7 +220,7 @@ string BuildHistoryData(string requestId, string symbol, string timeframe, MqlRa
           "}}";
 }
 
-//--- Build an OrderResult response
+// Build an OrderResult response
 string BuildOrderResult(string requestId, long ticket, bool success, string error = "") {
    string errorVal = "null";
    if (error != "")
@@ -239,16 +234,18 @@ string BuildOrderResult(string requestId, long ticket, bool success, string erro
           "}}";
 }
 
-//--- Build a Positions response
+// Build a Positions response
 string BuildPositions(string requestId) {
    int total = PositionsTotal();
    string positions = "[";
+   bool first = true;
 
    for (int i = 0; i < total; i++) {
       ulong ticket = PositionGetTicket(i);
       if (ticket == 0) continue;
 
-      if (i > 0) positions += ",";
+      if (!first) positions += ",";
+      first = false;
 
       string symbol   = PositionGetString(POSITION_SYMBOL);
       int    type     = (int)PositionGetInteger(POSITION_TYPE);
@@ -289,16 +286,18 @@ string BuildPositions(string requestId) {
           "}}";
 }
 
-//--- Build an Orders response (pending orders)
+// Build an Orders response (pending orders)
 string BuildOrders(string requestId) {
    int total = OrdersTotal();
    string orders = "[";
+   bool first = true;
 
    for (int i = 0; i < total; i++) {
       ulong ticket = OrderGetTicket(i);
       if (ticket == 0) continue;
 
-      if (i > 0) orders += ",";
+      if (!first) orders += ",";
+      first = false;
 
       string symbol     = OrderGetString(ORDER_SYMBOL);
       int    type       = (int)OrderGetInteger(ORDER_TYPE);
@@ -337,7 +336,7 @@ string BuildOrders(string requestId) {
           "}}";
 }
 
-//--- Build an Error response
+// Build an Error response
 string BuildError(int code, string message) {
    return "{\"type\":\"Error\",\"data\":{"
           "\"code\":" + IntegerToString(code) + ","
@@ -345,22 +344,51 @@ string BuildError(int code, string message) {
           "}}";
 }
 
-// ============================================================================
 // JSON parser helpers (minimal — extracts fields from flat JSON objects)
-// ============================================================================
-
-//--- Extract a string value from JSON by key
+//--- Extract a string value from JSON by key (handles escaped quotes)
 string JsonGetString(string json, string key) {
    string search = "\"" + key + "\":\"";
    int pos = StringFind(json, search);
    if (pos < 0) return "";
    pos += StringLen(search);
-   int end = StringFind(json, "\"", pos);
-   if (end < 0) return "";
-   return StringSubstr(json, pos, end - pos);
+
+   // Walk forward, skipping escaped quotes (\")
+   string result = "";
+   int len = StringLen(json);
+   while (pos < len) {
+      ushort ch = StringGetCharacter(json, pos);
+      if (ch == '\\' && pos + 1 < len) {
+         ushort next = StringGetCharacter(json, pos + 1);
+         if (next == '"') {
+            result += "\"";
+            pos += 2;
+            continue;
+         } else if (next == '\\') {
+            result += "\\";
+            pos += 2;
+            continue;
+         } else if (next == 'n') {
+            result += "\n";
+            pos += 2;
+            continue;
+         } else if (next == 'r') {
+            result += "\r";
+            pos += 2;
+            continue;
+         } else if (next == 't') {
+            result += "\t";
+            pos += 2;
+            continue;
+         }
+      }
+      if (ch == '"') break;  // Unescaped quote = end of value
+      result += ShortToString(ch);
+      pos++;
+   }
+   return result;
 }
 
-//--- Extract a double value from JSON by key
+// Extract a double value from JSON by key
 double JsonGetDouble(string json, string key) {
    string search = "\"" + key + "\":";
    int pos = StringFind(json, search);
@@ -394,7 +422,7 @@ long JsonGetLong(string json, string key) {
    return StringToInteger(StringSubstr(json, pos, end - pos));
 }
 
-//--- Extract a JSON array of strings (e.g. ["EURUSD","GBPUSD"])
+// Extract a JSON array of strings (e.g. ["EURUSD","GBPUSD"])
 int JsonGetStringArray(string json, string key, string &result[]) {
    string search = "\"" + key + "\":[";
    int pos = StringFind(json, search);
@@ -421,9 +449,7 @@ int JsonGetStringArray(string json, string key, string &result[]) {
    return count;
 }
 
-// ============================================================================
 // Timeframe string ↔ ENUM_TIMEFRAMES conversion
-// ============================================================================
 
 ENUM_TIMEFRAMES StringToTimeframe(string tf) {
    if (tf == "M1")  return PERIOD_M1;
@@ -450,9 +476,7 @@ ENUM_TIMEFRAMES StringToTimeframe(string tf) {
    return PERIOD_M1;  // Default
 }
 
-// ============================================================================
 // Order type string → ENUM_ORDER_TYPE
-// ============================================================================
 
 ENUM_ORDER_TYPE ParseOrderType(string side, string orderType) {
    if (orderType == "market") {
