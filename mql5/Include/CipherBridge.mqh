@@ -45,7 +45,7 @@ int    BridgeGetLogMessage(string &message);
 // These build JSON strings for BridgeResponse format:
 //   {"type":"<Type>","data":{...}}
 
-//--- Escape a string for safe JSON embedding
+// Escape a string for safe JSON embedding
 string JsonEscape(string s) {
    StringReplace(s, "\\", "\\\\");
    StringReplace(s, "\"", "\\\"");
@@ -406,7 +406,7 @@ double JsonGetDouble(string json, string key) {
    return StringToDouble(StringSubstr(json, pos, end - pos));
 }
 
-//--- Extract a long value from JSON by key
+// Extract a long value from JSON by key
 long JsonGetLong(string json, string key) {
    string search = "\"" + key + "\":";
    int pos = StringFind(json, search);
