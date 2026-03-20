@@ -1,5 +1,5 @@
 // cipher-mt5-bridge/mql5/Experts/CipherBridgeEA.mq5
-// CipherBridgeEA.mq5  
+// CipherBridgeEA.mq5
 // Expert Advisor for Cipher MT5 Gateway
 // Bridges MT5 terminal ↔ C++ DLL ↔ TCP ↔ Rust CMG Gateway
 #property copyright "CipherTrade"
@@ -18,7 +18,7 @@ input bool   InpLogVerbose       = false;   // Verbose logging
 CTrade g_trade;
 bool   g_initialized = false;
 
-//| Expert initialization
+// Expert initialization
 int OnInit() {
    // Allow DLL imports
    if (!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED)) {
@@ -51,7 +51,7 @@ int OnInit() {
    return INIT_SUCCEEDED;
 }
 
-//| Expert deinitialization
+// Expert deinitialization
 void OnDeinit(const int reason) {
    EventKillTimer();
 
@@ -121,7 +121,7 @@ void OnTimer() {
    }
 }
 
-//| Drain and print DLL log messages
+// Drain and print DLL log messages
 void DrainLogMessages() {
    for (int i = 0; i < 10; i++) {
       string msg = "";
@@ -151,7 +151,7 @@ void PushSubscribedTicks() {
 }
 
 
-//| Dispatch a command to the appropriate handler                    
+// Dispatch a command to the appropriate handler                    
 void ProcessCommand(int cmdType, string requestId, string paramsJson) {
    switch (cmdType) {     
       case CMD_PING:
@@ -231,7 +231,7 @@ void HandleStatus(string requestId) {
    BridgePushResponse(response);
 }
 
-//| CMD_CONNECT
+// CMD_CONNECT
 void HandleConnect(string requestId, string paramsJson) {
    // The EA is already connected to MT5 by virtue of running in the terminal.
    // This command acknowledges the gateway's connection request and returns
@@ -296,7 +296,7 @@ void HandleUnsubscribe(string requestId, string paramsJson) {
    Print("CipherBridge: Unsubscribed from ", count, " symbols");
 }
 
-//| CMD_GET_ACCOUNT_INFO
+// CMD_GET_ACCOUNT_INFO
 void HandleGetAccountInfo(string requestId) {
    BridgePushResponse(BuildAccountInfo(requestId));
 }
@@ -312,7 +312,7 @@ void HandleGetSymbolInfo(string requestId, string paramsJson) {
    BridgePushResponse(BuildSymbolInfo(requestId, symbol));
 }
 
-//| CMD_GET_HISTORY
+// CMD_GET_HISTORY
 void HandleGetHistory(string requestId, string paramsJson) {
    string symbol    = JsonGetString(paramsJson, "symbol");
    string timeframe = JsonGetString(paramsJson, "timeframe");
@@ -409,7 +409,7 @@ void HandlePlaceOrder(string requestId, string paramsJson) {
    g_trade.SetExpertMagicNumber(0);
 }
 
-//| CMD_CLOSE_ORDER
+// CMD_CLOSE_ORDER
 void HandleCloseOrder(string requestId, string paramsJson) {
    long   ticket = JsonGetLong(paramsJson, "ticket");
    double volume = JsonGetDouble(paramsJson, "volume");
@@ -502,12 +502,12 @@ void HandleModifyOrder(string requestId, string paramsJson) {
    }
 }
 
-//| CMD_GET_POSITIONS
+// CMD_GET_POSITIONS
 void HandleGetPositions(string requestId) {
    BridgePushResponse(BuildPositions(requestId));
 }
 
-//| CMD_GET_ORDERS
+// CMD_GET_ORDERS
 void HandleGetOrders(string requestId) {
    BridgePushResponse(BuildOrders(requestId));
 }
