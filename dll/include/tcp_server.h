@@ -24,7 +24,8 @@ namespace cipher {
 
 class TcpServer {
 public:
-    using OnLineCallback = std::function<void(const std::string& line)>;
+    using OnLineCallback       = std::function<void(const std::string& line)>;
+    using OnDisconnectCallback = std::function<void()>;
 
     TcpServer(int port, LogQueue& log);
     ~TcpServer();
@@ -41,6 +42,7 @@ public:
 
     // Set callback for incoming lines from the client.
     void set_on_line(OnLineCallback cb);
+    void set_on_disconnect(OnDisconnectCallback cb);
 
     // Is the gateway client currently connected?
     bool is_client_connected() const;
@@ -63,6 +65,7 @@ private:
     std::thread reader_thread_;
 
     OnLineCallback on_line_;
+    OnDisconnectCallback on_disconnect_;
     std::mutex callback_mutex_;
 };
 
