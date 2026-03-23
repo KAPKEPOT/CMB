@@ -203,7 +203,13 @@ void TcpServer::reader_loop(SOCKET client) {
             client_connected_ = false;
         }
     }
-
+    
+    // Notify dllmain so it can flush stale queued responses
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        if (on_disconnect_) on_disconnect_();
+    }
+    
     log_.log("Reader thread exiting");
 }
 
@@ -233,6 +239,10 @@ bool TcpServer::send_line(const std::string& json_line) {
     }
 
     return true;
+}
+void TcpServer::set_on_disconnect(OnDisconnectCallback cb) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    on_disconnect_ = std::move(cb);
 }
 
 void TcpServer::set_on_line(OnLineCallback cb) {

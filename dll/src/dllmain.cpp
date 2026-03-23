@@ -43,20 +43,30 @@ static std::string wstr_to_utf8(const wchar_t* wstr) {
     return result;
 }
 
-static void utf8_to_wstr(const std::string& utf8, wchar_t* out, int out_size) {
-    if (out_size <= 0) return;
+// Returns true if the string fit within out_size, false if it was truncated.
+static bool utf8_to_wstr(const std::string& utf8, wchar_t* out, int out_size) {
+    if (out_size <= 0) return false;
     if (utf8.empty()) {
         out[0] = L'\0';
-        return;
+        return true;
     }
-    int chars_written = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, out, out_size);
-    if (chars_written == 0) {
+    // First pass: calculate required size (includes null terminator)
+    int required = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    if (required <= 0) {
         out[0] = L'\0';
+        return false;
     }
+    if (required > out_size) {
+        // Truncate: fill what fits, always null-terminate
+        MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, out, out_size);
+        out[out_size - 1] = L'\0';
+        return false;  // caller knows truncation happened
+    }
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, out, out_size);
+    return true;
 }
 
 // Response sender thread
-
 static void sender_thread_func() {
     while (g_sender_running) {
         auto response = g_response_queue.wait_pop_for(std::chrono::milliseconds(50));
@@ -156,6 +166,12 @@ int BRIDGE_CALL BridgeInit(int port) {
     // Create TCP server
     g_server = std::make_unique<cipher::TcpServer>(port, g_log);
     g_server->set_on_line(on_incoming_line);
+    g_server->set_on_disconnect([]() {
+        // Flush responses queued for the dead connection — sending them to a
+        // new client would corrupt its session from the first message.
+        g_response_queue.clear();
+        g_log.log("Client disconnected — response queue flushed");
+    });
 
     if (!g_server->start()) {
         g_log.log("Failed to start TCP server");
@@ -240,8 +256,21 @@ int BRIDGE_CALL BridgePollCommand(wchar_t* requestId, wchar_t* paramsJson) {
         return CMD_NONE;
     }
 
-    utf8_to_wstr(cmd->request_id, requestId, 128);
-    utf8_to_wstr(cmd->params_json, paramsJson, 8192);
+    bool id_ok     = utf8_to_wstr(cmd->request_id,  requestId,  128);
+    bool params_ok = utf8_to_wstr(cmd->params_json, paramsJson, 8192);
+
+    if (!id_ok || !params_ok) {
+        // Payload exceeded buffer — push an error response back to the gateway
+        // so the external client gets a meaningful rejection instead of silence.
+        g_log.log("BridgePollCommand: payload truncated (requestId=" +
+                  std::to_string(cmd->request_id.size()) + " chars, params=" +
+                  std::to_string(cmd->params_json.size()) + " chars) — sending error");
+        std::string err = "{\"type\":\"Error\",\"data\":{\"code\":-2,"
+                          "\"message\":\"Command payload too large for bridge buffer\","
+                          "\"request_id\":\"" + cmd->request_id + "\"}}";
+        g_response_queue.push(std::move(err));
+        return CMD_NONE;  // Don't hand a truncated command to the EA
+    }
 
     return cmd->type;
 }

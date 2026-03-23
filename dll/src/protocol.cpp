@@ -70,12 +70,6 @@ static std::string wrap_response(const std::string& type, const json& data) {
     return envelope.dump();
 }
 
-static std::string wrap_response_no_data(const std::string& type) {
-    json envelope;
-    envelope["type"] = type;
-    return envelope.dump();
-}
-
 // Response builders
 
 std::string build_pong(const std::string& request_id, long long timestamp) {
