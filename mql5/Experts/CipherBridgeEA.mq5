@@ -375,6 +375,17 @@ void HandlePlaceOrder(string requestId, string paramsJson) {
 
    ENUM_ORDER_TYPE type = ParseOrderType(side, orderType);
 
+   if (side != "buy" && side != "sell") {
+      g_trade.SetExpertMagicNumber(0);
+      BridgePushResponse(BuildOrderResult(requestId, 0, false, "Unknown side: " + side));
+      return;
+   }
+   if (orderType != "market" && orderType != "limit" && orderType != "stop" && orderType != "stop_limit") {
+      g_trade.SetExpertMagicNumber(0);
+      BridgePushResponse(BuildOrderResult(requestId, 0, false, "Unknown order_type: " + orderType));
+      return;
+   }
+
    // Set magic number if provided
    if (magic > 0) g_trade.SetExpertMagicNumber(magic);
 
