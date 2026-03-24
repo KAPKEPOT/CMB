@@ -428,23 +428,53 @@ int JsonGetStringArray(string json, string key, string &result[]) {
    int pos = StringFind(json, search);
    if (pos < 0) return 0;
    pos += StringLen(search);
-   int end = StringFind(json, "]", pos);
-   if (end < 0) return 0;
 
-   string arrayContent = StringSubstr(json, pos, end - pos);
-   // Parse comma-separated quoted strings
+   // Fix 1: scan for the matching ] character by character,
+   // respecting nested structures instead of blindly finding the first ]
+   int depth = 1;
+   int scanPos = pos;
+   int jsonLen = StringLen(json);
+   while (scanPos < jsonLen && depth > 0) {
+      ushort ch = StringGetCharacter(json, scanPos);
+      if (ch == '[') depth++;
+      else if (ch == ']') depth--;
+      if (depth > 0) scanPos++;
+   }
+   if (depth != 0) return 0;  // malformed — no matching ]
+   int end = scanPos;
+
+   // Fix 2: parse strings character by character, skipping escaped quotes,
+   // exactly like JsonGetString does — not blindly finding the next "
    int count = 0;
    int idx = 0;
-   while (idx < StringLen(arrayContent)) {
-      int qStart = StringFind(arrayContent, "\"", idx);
-      if (qStart < 0) break;
-      int qEnd = StringFind(arrayContent, "\"", qStart + 1);
-      if (qEnd < 0) break;
+   int contentLen = end - pos;
+
+   while (idx < contentLen) {
+      // Find opening quote of next string
+      ushort ch = StringGetCharacter(json, pos + idx);
+      if (ch != '"') { idx++; continue; }
+      idx++;  // skip opening quote
+
+      // Walk to closing quote, honouring backslash escapes
+      string value = "";
+      while (idx < contentLen) {
+         ushort c = StringGetCharacter(json, pos + idx);
+         if (c == '\\' && idx + 1 < contentLen) {
+            ushort next = StringGetCharacter(json, pos + idx + 1);
+            if (next == '"')       { value += "\""; idx += 2; continue; }
+            else if (next == '\\') { value += "\\"; idx += 2; continue; }
+            else if (next == 'n')  { value += "\n"; idx += 2; continue; }
+            else if (next == 'r')  { value += "\r"; idx += 2; continue; }
+            else if (next == 't')  { value += "\t"; idx += 2; continue; }
+         }
+         if (c == '"') { idx++; break; }  // unescaped quote = end of string
+         value += ShortToString(c);
+         idx++;
+      }
 
       ArrayResize(result, count + 1);
-      result[count] = StringSubstr(arrayContent, qStart + 1, qEnd - qStart - 1);
+      result[count] = value;
       count++;
-      idx = qEnd + 1;
    }
    return count;
 }
