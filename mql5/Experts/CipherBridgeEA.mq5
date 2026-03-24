@@ -361,8 +361,8 @@ void HandlePlaceOrder(string requestId, string paramsJson) {
    long   magic     = JsonGetLong(paramsJson, "magic");
 
    if (symbol == "" || side == "" || volume <= 0) {
-       g_trade.SetExpertMagicNumber(0);
-       BridgePushResponse(BuildOrderResult(requestId, 0, false, "Missing required parameters"));
+      g_trade.SetExpertMagicNumber(0);
+      BridgePushResponse(BuildOrderResult(requestId, 0, false, "Missing required parameters"));
       return;
    }
 
@@ -380,6 +380,7 @@ void HandlePlaceOrder(string requestId, string paramsJson) {
 
    // For market orders, get current price if not provided
    if (orderType == "market" && (price == 0.0 || price == EMPTY_VALUE)) {
+      
       if (side == "buy")
          price = SymbolInfoDouble(symbol, SYMBOL_ASK);
       else
