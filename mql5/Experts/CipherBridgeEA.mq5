@@ -368,7 +368,7 @@ void HandlePlaceOrder(string requestId, string paramsJson) {
 
    // Ensure symbol is selected
    if (!SymbolSelect(symbol, true)) {
-       g_trade.SetExpertMagicNumber(0);  // ← reset before returning
+      g_trade.SetExpertMagicNumber(0);  // ← reset before returning
       BridgePushResponse(BuildOrderResult(requestId, 0, false, "Symbol not available: " + symbol));
       return;
    }
