@@ -263,6 +263,7 @@ void HandleConnect(string requestId, string paramsJson) {
 // CMD_DISCONNECT
 void HandleDisconnect(string requestId) {
    string response = "{\"type\":\"DisconnectResult\",\"data\":{"
+      "\"request_id\":\"" + JsonEscape(requestId) + "\","
       "\"success\":true"
       "}}";
    BridgePushResponse(response);
@@ -325,7 +326,11 @@ void HandleGetHistory(string requestId, string paramsJson) {
    }
 
    ENUM_TIMEFRAMES tf = StringToTimeframe(timeframe);
-
+   if (tf == PERIOD_M1 && timeframe != "M1") {
+       BridgePushResponse(BuildError(-1, "Unknown timeframe: " + timeframe));
+       return;
+   }
+   
    MqlRates rates[];
    ArraySetAsSeries(rates, false);
 
@@ -356,12 +361,14 @@ void HandlePlaceOrder(string requestId, string paramsJson) {
    long   magic     = JsonGetLong(paramsJson, "magic");
 
    if (symbol == "" || side == "" || volume <= 0) {
-      BridgePushResponse(BuildOrderResult(requestId, 0, false, "Missing required parameters"));
+       g_trade.SetExpertMagicNumber(0);
+       BridgePushResponse(BuildOrderResult(requestId, 0, false, "Missing required parameters"));
       return;
    }
 
    // Ensure symbol is selected
    if (!SymbolSelect(symbol, true)) {
+       g_trade.SetExpertMagicNumber(0);  // ← reset before returning
       BridgePushResponse(BuildOrderResult(requestId, 0, false, "Symbol not available: " + symbol));
       return;
    }
