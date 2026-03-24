@@ -8,7 +8,8 @@
 
 // DLL Imports
 #import "CipherBridge.dll"
-int    BridgeInit(int port);
+int    BridgeInit(string gateway_url, string account_id);
+int    BridgePollCommand(string &requestId, string &paramsJson);
 void   BridgeShutdown();
 int    BridgeIsClientConnected();
 void   BridgePushTick(string symbol, double bid, double ask, double last,
@@ -16,7 +17,6 @@ void   BridgePushTick(string symbol, double bid, double ask, double last,
 void   BridgePushCandle(string symbol, string timeframe, long timeMs,
                         double open, double high, double low, double close,
                         long volume, int complete);
-int    BridgePollCommand(string &requestId, string &paramsJson);
 void   BridgePushResponse(string responseJson);
 int    BridgeGetSubscribedSymbolCount();
 int    BridgeGetSubscribedSymbol(int index, string &symbol);
