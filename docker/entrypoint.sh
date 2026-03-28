@@ -45,6 +45,7 @@ echo "   Gateway:  $GATEWAY_URL"
 # ============================================================================
 
 echo "→ Starting Xvfb..."
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 Xvfb :99 -screen 0 1024x768x16 &
 XVFB_PID=$!
 sleep 2
