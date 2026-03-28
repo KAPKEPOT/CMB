@@ -1,1 +1,70 @@
+# cipher-mt5-bridge/docker/docker-compose.yml
+# Development/testing compose — shows the architecture
+#
+# The gateway manages bridge containers dynamically via Docker API.
+# This compose file is for MANUAL testing only.
+# In production, the gateway creates containers via the Docker API.
 
+version: "3.8"
+
+services:
+  # ==========================================================
+  # CMG Gateway (runs on Linux VPS)
+  # ==========================================================
+  gateway:
+    build:
+      context: ../CMG
+      dockerfile: Dockerfile
+    container_name: cmg-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      RUST_LOG: "info"
+      JWT_SECRET: "${JWT_SECRET}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY}"
+      ENABLE_AUTH: "true"
+      API_KEY_HEADER: "X-API-Key"
+      MAX_REQUESTS_PER_SECOND: "100"
+      MAX_WEBSOCKET_CONNECTIONS: "1000"
+      MAX_USERS: "1000"
+      SESSION_TIMEOUT_SECS: "3600"
+      DOCKER_BRIDGE_IMAGE: "cipherbridge/mt5-bridge:latest"
+      DOCKER_CPU_LIMIT: "0.5"
+      DOCKER_MEMORY_MB: "512"
+      HEARTBEAT_CHECK_INTERVAL_SECS: "30"
+      HEARTBEAT_STALE_THRESHOLD_SECS: "90"
+    volumes:
+      # Mount Docker socket so gateway can create bridge containers
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - cipher-net
+    restart: unless-stopped
+
+  # ==========================================================
+  # Example bridge container (normally created by gateway)
+  # ==========================================================
+  bridge-test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: cipher-bridge-test
+    environment:
+      ACCOUNT_ID: "test-account-uuid"
+      AUTH_TOKEN: "test-auth-token"
+      GATEWAY_URL: "http://gateway:8080"
+    depends_on:
+      - gateway
+    networks:
+      - cipher-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+networks:
+  cipher-net:
+    driver: bridge
+    name: cipher-bridge-net
