@@ -65,7 +65,7 @@ RUN mkdir -p "${MT5_INSTALL_DIR}" && \
     mkdir -p /opt/bridge
 
 # Copy bridge files
-COPY dll/build/CipherBridge.dll /opt/bridge/CipherBridge.dll
+COPY dll/build/Release/CipherBridge.dll /opt/bridge/CipherBridge.dll
 COPY mql5/Include/CipherBridge.mqh /opt/bridge/CipherBridge.mqh
 COPY mql5/Experts/CipherBridgeEA.mq5 /opt/bridge/CipherBridgeEA.mq5
 COPY docker/launcher.py /opt/bridge/launcher.py
