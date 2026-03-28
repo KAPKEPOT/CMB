@@ -127,6 +127,7 @@ if(MSVC)
     target_compile_options(CipherBridge PRIVATE
         $<$<CONFIG:Release>:/O2 /Oi /GL /GS->
         /bigobj
+        /std:c++17
     )
     target_link_options(CipherBridge PRIVATE
         $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
