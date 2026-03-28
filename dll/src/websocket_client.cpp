@@ -216,7 +216,7 @@ void WebSocketClient::on_message(websocketpp::connection_hdl hdl, std::string pa
             // Registration confirmed
             break;
             
-        case MessageType::ERROR:
+        case MessageType::MSG_ERROR:
             if (on_error_) on_error_(msg.params_json);
             break;
             
@@ -228,7 +228,7 @@ void WebSocketClient::on_message(websocketpp::connection_hdl hdl, std::string pa
 
 GatewayMessage WebSocketClient::parse_message(const std::string& json_str) {
     GatewayMessage msg;
-    msg.type = MessageType::ERROR;
+    msg.type = MessageType::MSG_ERROR;
     msg.raw = json_str;
     
     try {
@@ -248,7 +248,7 @@ GatewayMessage WebSocketClient::parse_message(const std::string& json_str) {
             msg.type = MessageType::PONG;
         }
         else if (type_str == "error") {
-            msg.type = MessageType::ERROR;
+            msg.type = MessageType::MSG_ERROR;
             if (j.contains("data")) {
                 msg.params_json = j["data"].dump();
             }

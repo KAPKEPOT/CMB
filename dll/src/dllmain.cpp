@@ -11,11 +11,7 @@
 //   - CMD_CREDENTIALS delivers MT5 login info from gateway
 //   - All trading operations execute on MT5's main thread
 
-#define CIPHERBRIDGE_EXPORTS
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
+// #define CIPHERBRIDGE_EXPORTS
 
 #include <windows.h>
 #include <string>
