@@ -19,11 +19,11 @@ ENV WINEARCH=win64
 ENV DISPLAY=:99
 
 # Install Wine + dependencies
-RUN dpkg --add-architecture amd64 && \
+RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
         wine64 \
-        wine32 \
+        libwine \
         xvfb \
         x11-utils \
         wget \
@@ -37,7 +37,7 @@ RUN dpkg --add-architecture amd64 && \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies for launcher
-RUN pip3 install --no-cache-dir requests websocket-client
+RUN pip3 install --no-cache-dir --break-system-packages requests websocket-client
 
 # Initialize Wine prefix
 RUN wineboot --init && \
@@ -75,6 +75,6 @@ RUN chmod +x /opt/bridge/entrypoint.sh
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD curl -f http://localhost:8765/health 2>/dev/null || exit 1
+    CMD pgrep -f terminal64.exe > /dev/null || exit 1
 
 ENTRYPOINT ["/opt/bridge/entrypoint.sh"]
