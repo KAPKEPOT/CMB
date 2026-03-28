@@ -9,6 +9,7 @@
 // DLL Imports
 #import "CipherBridge.dll"
 int    BridgeInit(string gateway_url, string account_id);
+int    BridgeInitFromEnv();
 int    BridgePollCommand(string &requestId, string &paramsJson);
 void   BridgeShutdown();
 int    BridgeIsClientConnected();
@@ -40,6 +41,7 @@ int    BridgeGetLogMessage(string &message);
 #define CMD_MODIFY_ORDER       12
 #define CMD_GET_POSITIONS      13
 #define CMD_GET_ORDERS         14
+#define CMD_CREDENTIALS        15
 
 // JSON builder helpers
 // These build JSON strings for BridgeResponse format:
