@@ -23,7 +23,7 @@ RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
         wine64 \
-        libwine \
+        wine \
         xvfb \
         x11-utils \
         wget \
