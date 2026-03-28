@@ -9,19 +9,10 @@
 #include <queue>
 #include <memory>
 
-// Forward declare WebSocket++ types
+// connection_hdl is std::weak_ptr<void> in WebSocket++
+
 namespace websocketpp {
-    namespace lib {
-        namespace asio {
-            class io_context;
-        }
-    }
-    template<typename T>
-    class client;
-    class connection_hdl;
-    template<typename T>
-    class connection;
-    struct config;
+    using connection_hdl = std::weak_ptr<void>;
 }
 
 namespace cipher {
