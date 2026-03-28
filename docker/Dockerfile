@@ -37,7 +37,7 @@ RUN dpkg --add-architecture i386 && \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies for launcher
-RUN pip3 install --no-cache-dir --break-system-packages requests websocket-client
+RUN pip3 install --no-cache-dir requests websocket-client
 
 # Initialize Wine prefix
 RUN wineboot --init && \
