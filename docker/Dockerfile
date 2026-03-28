@@ -17,6 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV WINEPREFIX=/root/.wine
 ENV WINEARCH=win64
 ENV DISPLAY=:99
+ENV PYTHONUNBUFFERED=1
 
 # Install Wine + dependencies
 RUN dpkg --add-architecture i386 && \
