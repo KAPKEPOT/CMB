@@ -32,7 +32,7 @@ enum class MessageType {
     PING,         // Heartbeat ping
     PONG,         // Heartbeat response
     REGISTER_ACK, // Registration acknowledgment
-    ERROR         // Error message
+    MSG_ERROR         // Error message
 };
 
 // Parsed message from gateway
