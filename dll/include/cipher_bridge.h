@@ -1,7 +1,5 @@
 // cipher-mt5-bridge/dll/include/cipher_bridge.h
-// Public API for the CipherBridge DLL
-// This DLL is loaded by the MQL5 Expert Advisor and provides
-// TCP connectivity to the Rust CMG gateway.
+// v3.0 — Supports both Docker (env vars) and manual (EA input) modes
 
 #pragma once
 
@@ -11,14 +9,9 @@
 #define BRIDGE_API __declspec(dllimport)
 #endif
 
-// MQL5 uses __stdcall for DLL imports
 #define BRIDGE_CALL __stdcall
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// Command type enum — returned by BridgePollCommand
+// Command type enum
 enum BridgeCommandType {
     CMD_NONE             = 0,
     CMD_PING             = 1,
@@ -35,32 +28,46 @@ enum BridgeCommandType {
     CMD_MODIFY_ORDER     = 12,
     CMD_GET_POSITIONS    = 13,
     CMD_GET_ORDERS       = 14,
+    // New: credential delivery from gateway
+    CMD_CREDENTIALS      = 15,
 };
 
-// Lifecycle
+// === Lifecycle ===
 
-// Initialize the bridge and start TCP listener on the given port.
+// Initialize bridge in MANUAL mode (EA provides URL and account_id)
+BRIDGE_API int BRIDGE_CALL BridgeInit(
+    const wchar_t* gateway_ws_url,   // Full WS URL (e.g. wss://gw:443/bridge/ws?token=xxx)
+    const wchar_t* account_id         // Account UUID
+);
+
+// Initialize bridge in DOCKER mode (reads from config files written by launcher.py)
+// Reads: /tmp/bridge_ws_url.txt, /tmp/bridge_account_id.txt
 // Returns 1 on success, 0 on failure.
-BRIDGE_API int BRIDGE_CALL BridgeInit(int port);
+BRIDGE_API int BRIDGE_CALL BridgeInitFromEnv();
 
-// Shut down the bridge, close all connections, stop TCP listener.
+// Poll for the next pending command.
+// Returns CMD_NONE if no command pending.
+// CMD_CREDENTIALS means paramsJson contains {"mt5_login":"...","mt5_password":"...","mt5_server":"..."}
+BRIDGE_API int BRIDGE_CALL BridgePollCommand(
+    wchar_t* requestId,    // pre-allocated, min 128 wchars
+    wchar_t* paramsJson    // pre-allocated, min 8192 wchars
+);
+
+// Shut down the bridge
 BRIDGE_API void BRIDGE_CALL BridgeShutdown();
 
-// Connection status
+// === Connection ===
 
-// Returns 1 if the Rust gateway is currently connected, 0 otherwise.
 BRIDGE_API int BRIDGE_CALL BridgeIsClientConnected();
 
-// Push market data TO the gateway (called from EA's OnTick / OnTimer)
+// === Market Data (EA → Gateway) ===
 
-// Push a tick update. symbol is a wide string (MQL5 native).
 BRIDGE_API void BRIDGE_CALL BridgePushTick(
     const wchar_t* symbol,
     double bid, double ask, double last,
     long long volume, long long timeMs
 );
 
-// Push a candle update.
 BRIDGE_API void BRIDGE_CALL BridgePushCandle(
     const wchar_t* symbol,
     const wchar_t* timeframe,
@@ -69,41 +76,15 @@ BRIDGE_API void BRIDGE_CALL BridgePushCandle(
     long long volume, int complete
 );
 
-// Command polling (called from EA's OnTimer)
+// === Responses (EA → Gateway) ===
 
-// Poll for the next pending command from the gateway.
-// Returns the command type (BridgeCommandType enum).
-// Fills requestId (pre-allocated by MQL5, min 128 wchars).
-// Fills paramsJson with the JSON "data" payload (min 8192 wchars).
-// Returns CMD_NONE (0) if no command is pending.
-BRIDGE_API int BRIDGE_CALL BridgePollCommand(
-    wchar_t* requestId,
-    wchar_t* paramsJson
-);
-
-// Push responses BACK to the gateway (called after EA processes a command)
-
-// Push a fully-formed JSON response string to the gateway.
-// The string must be a complete JSON object matching BridgeResponse format.
 BRIDGE_API void BRIDGE_CALL BridgePushResponse(const wchar_t* responseJson);
 
-// Subscription tracking
+// === Subscriptions ===
 
-// Returns the number of symbols currently subscribed by the gateway.
 BRIDGE_API int BRIDGE_CALL BridgeGetSubscribedSymbolCount();
+BRIDGE_API int BRIDGE_CALL BridgeGetSubscribedSymbol(int index, wchar_t* symbolOut);
 
-// Get the symbol at the given index. Fills symbolOut (min 64 wchars).
-// Returns 1 on success, 0 if index out of range.
-BRIDGE_API int BRIDGE_CALL BridgeGetSubscribedSymbol(
-    int index, wchar_t* symbolOut
-);
+// === Logging ===
 
-// Logging (bridge → EA log)
-
-// Get the next log message from the bridge (for EA to Print()).
-// Returns 1 if a message was available, 0 if empty.
 BRIDGE_API int BRIDGE_CALL BridgeGetLogMessage(wchar_t* messageOut);
-
-#ifdef __cplusplus
-}
-#endif
