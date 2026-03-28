@@ -7,7 +7,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Wine%20%2B%20MT5-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Low-latency C++ DLL + MQL5 Expert Advisor that bridges MetaTrader 5 to the [CipherTrade Gateway (CMG)](https://github.com/KAPKEPOT/CMG) over WebSocket.**
+**Low-latency C++ DLL + MQL5 Expert Advisor that bridges MetaTrader 5 to the [CipherBridge Gateway (CMG)](https://github.com/KAPKEPOT/CMG) over WebSocket.**
 
 </div>
 
