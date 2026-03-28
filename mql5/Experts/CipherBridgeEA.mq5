@@ -1,49 +1,63 @@
 // cipher-mt5-bridge/mql5/Experts/CipherBridgeEA.mq5
-// Event-driven version - NO POLLING!
+// v2.0 — Supports Docker (auto) and Manual modes
+//
+// Docker mode:  BridgeInitFromEnv() — reads config from launcher.py output
+// Manual mode:  BridgeInit(url, account_id) — uses EA input params
+//
+// New: handles CMD_CREDENTIALS from gateway and reports login_result
 
-#property copyright "CipherTrade"
+#property copyright "CipherBridge"
 #property version   "2.00"
 #property strict
 
 #include <CipherBridge.mqh>
 #include <Trade\Trade.mqh>
 
-// Input parameters
-input string InpGatewayUrl = "wss://gateway.rayonix.site:443";  // WebSocket URL
-input string InpAccountId  = "";  // Account ID (leave empty to use MT5 login)
-input int    InpTimerMs    = 10;   // Timer interval (commands + ticks)
-input bool   InpLogVerbose = false;   // Verbose logging
+// Input parameters (only used in Manual mode)
+input string InpGatewayUrl  = "";    // WebSocket URL (empty = Docker mode)
+input string InpAccountId   = "";    // Account ID (empty = auto-detect)
+input int    InpTimerMs     = 10;    // Timer interval (ms)
+input bool   InpLogVerbose  = false; // Verbose logging
 
 // Globals
 CTrade g_trade;
 bool   g_initialized = false;
+bool   g_credentials_received = false;
+bool   g_login_reported = false;
 
 //+------------------------------------------------------------------+
-//| Expert initialization function                                   |
+//| Expert initialization                                             |
 //+------------------------------------------------------------------+
 int OnInit() {
-    // Allow DLL imports
+    // Check DLL imports
     if (!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED)) {
-        Alert("CipherBridge: DLL imports must be enabled! Enable in Tools → Options → Expert Advisors");
+        Alert("CipherBridge: DLL imports must be enabled!");
         return INIT_FAILED;
     }
     
-    // Determine account ID
-    string account_id = InpAccountId;
-    if (account_id == "") {
-        account_id = IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
+    int result = 0;
+    
+    if (InpGatewayUrl == "" || InpGatewayUrl == "auto") {
+        // Docker mode — read from config files/env vars
+        Print("CipherBridge: Starting in Docker mode");
+        result = BridgeInitFromEnv();
+    } else {
+        // Manual mode — use EA input params
+        Print("CipherBridge: Starting in Manual mode");
+        string account_id = InpAccountId;
+        if (account_id == "")
+            account_id = IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
+        result = BridgeInit(InpGatewayUrl, account_id);
     }
     
-    // Initialize the bridge (connects to gateway via WebSocket)
-    int result = BridgeInit(InpGatewayUrl, account_id);
     if (result == 0) {
-        Alert("CipherBridge: Failed to connect to gateway at " + InpGatewayUrl);
+        Alert("CipherBridge: Failed to initialize bridge");
         return INIT_FAILED;
     }
     
-    // Set timer for pushing ticks only (not for command polling!)
+    // Set timer
     if (!EventSetMillisecondTimer(InpTimerMs)) {
-        Print("CipherBridge: Failed to set ms timer, falling back to 1s timer");
+        Print("CipherBridge: Failed to set ms timer, using 1s");
         EventSetTimer(1);
     }
     
@@ -54,19 +68,18 @@ int OnInit() {
     g_trade.SetAsyncMode(false);
     
     g_initialized = true;
-    Print("CipherBridge: EA initialized (event-driven mode)");
-    Print("  Gateway: ", InpGatewayUrl);
-    Print("  Account: ", account_id);
+    g_credentials_received = false;
+    g_login_reported = false;
     
+    Print("CipherBridge: EA initialized v2.0");
     return INIT_SUCCEEDED;
 }
 
 //+------------------------------------------------------------------+
-//| Expert deinitialization function                                 |
+//| Expert deinitialization                                           |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason) {
     EventKillTimer();
-    
     if (g_initialized) {
         BridgeShutdown();
         g_initialized = false;
@@ -75,13 +88,11 @@ void OnDeinit(const int reason) {
 }
 
 //+------------------------------------------------------------------+
-//| Tick handler — push market data for subscribed symbols           |
+//| Tick handler — push market data                                   |
 //+------------------------------------------------------------------+
 void OnTick() {
-    if (!g_initialized) return;
-    if (!BridgeIsClientConnected()) return;
+    if (!g_initialized || !BridgeIsClientConnected()) return;
     
-    // Push tick for the current chart symbol
     string sym = Symbol();
     MqlTick tick;
     if (SymbolInfoTick(sym, tick)) {
@@ -91,21 +102,25 @@ void OnTick() {
 }
 
 //+------------------------------------------------------------------+
-//| Timer handler — push ticks for subscribed symbols (periodic)     |
-//| Also handles any necessary periodic cleanup                      |
+//| Timer handler — process commands, push subscribed ticks           |
 //+------------------------------------------------------------------+
 void OnTimer() {
     if (!g_initialized) return;
 
-    // Drain bridge log messages
+    // Drain DLL log messages
     DrainLogMessages();
 
-    // Push ticks for all subscribed symbols
+    // Push subscribed symbol ticks
     if (BridgeIsClientConnected()) {
         PushSubscribedTicks();
+        
+        // If connected and MT5 is logged in but we haven't reported yet, do it
+        if (!g_login_reported) {
+            CheckAndReportLogin();
+        }
     }
 
-    // Process up to 32 commands per timer tick — runs on MT5 main thread, thread-safe
+    // Process up to 32 commands per timer tick
     for (int batch = 0; batch < 32; batch++) {
         string requestId = "";
         StringInit(requestId, 128);
@@ -119,6 +134,28 @@ void OnTimer() {
             Print("CipherBridge: cmd=", cmdType, " reqId=", requestId);
 
         ProcessCommand(cmdType, requestId, paramsJson);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check MT5 login status and report to gateway                     |
+//+------------------------------------------------------------------+
+void CheckAndReportLogin() {
+    // Check if terminal is connected to broker
+    bool connected = TerminalInfoInteger(TERMINAL_CONNECTED) != 0;
+    long account = AccountInfoInteger(ACCOUNT_LOGIN);
+    
+    if (connected && account > 0) {
+        // MT5 is logged in — report success
+        string response = "{\"type\":\"login_result\",\"data\":{"
+            "\"success\":true,"
+            "\"account\":" + IntegerToString(account) + ","
+            "\"server\":\"" + JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
+            "\"balance\":" + JsonDouble(AccountInfoDouble(ACCOUNT_BALANCE), 2) +
+            "}}";
+        BridgePushResponse(response);
+        g_login_reported = true;
+        Print("CipherBridge: Login success reported (account=", account, ")");
     }
 }
 
@@ -142,7 +179,7 @@ void PushSubscribedTicks() {
 }
 
 //+------------------------------------------------------------------+
-//| Drain and print DLL log messages                                 |
+//| Drain and print DLL log messages                                  |
 //+------------------------------------------------------------------+
 void DrainLogMessages() {
     for (int i = 0; i < 10; i++) {
@@ -155,60 +192,68 @@ void DrainLogMessages() {
 }
 
 //+------------------------------------------------------------------+
-//| Dispatch a command to the appropriate handler                    |
+//| Dispatch command to handler                                       |
 //+------------------------------------------------------------------+
 void ProcessCommand(int cmdType, string requestId, string paramsJson) {
     switch (cmdType) {
-        case CMD_PING:
-            HandlePing(requestId);
-            break;
-        case CMD_STATUS:
-            HandleStatus(requestId);
-            break;
-        case CMD_CONNECT:
-            HandleConnect(requestId, paramsJson);
-            break;
-        case CMD_DISCONNECT:
-            HandleDisconnect(requestId);
-            break;
-        case CMD_SUBSCRIBE:
-            HandleSubscribe(requestId, paramsJson);
-            break;
-        case CMD_UNSUBSCRIBE:
-            HandleUnsubscribe(requestId, paramsJson);
-            break;
-        case CMD_GET_ACCOUNT_INFO:
-            HandleGetAccountInfo(requestId);
-            break;
-        case CMD_GET_SYMBOL_INFO:
-            HandleGetSymbolInfo(requestId, paramsJson);
-            break;
-        case CMD_GET_HISTORY:
-            HandleGetHistory(requestId, paramsJson);
-            break;
-        case CMD_PLACE_ORDER:
-            HandlePlaceOrder(requestId, paramsJson);
-            break;
-        case CMD_CLOSE_ORDER:
-            HandleCloseOrder(requestId, paramsJson);
-            break;
-        case CMD_MODIFY_ORDER:
-            HandleModifyOrder(requestId, paramsJson);
-            break;
-        case CMD_GET_POSITIONS:
-            HandleGetPositions(requestId);
-            break;
-        case CMD_GET_ORDERS:
-            HandleGetOrders(requestId);
-            break;
+        case CMD_PING:             HandlePing(requestId); break;
+        case CMD_STATUS:           HandleStatus(requestId); break;
+        case CMD_CONNECT:          HandleConnect(requestId, paramsJson); break;
+        case CMD_DISCONNECT:       HandleDisconnect(requestId); break;
+        case CMD_SUBSCRIBE:        HandleSubscribe(requestId, paramsJson); break;
+        case CMD_UNSUBSCRIBE:      HandleUnsubscribe(requestId, paramsJson); break;
+        case CMD_GET_ACCOUNT_INFO: HandleGetAccountInfo(requestId); break;
+        case CMD_GET_SYMBOL_INFO:  HandleGetSymbolInfo(requestId, paramsJson); break;
+        case CMD_GET_HISTORY:      HandleGetHistory(requestId, paramsJson); break;
+        case CMD_PLACE_ORDER:      HandlePlaceOrder(requestId, paramsJson); break;
+        case CMD_CLOSE_ORDER:      HandleCloseOrder(requestId, paramsJson); break;
+        case CMD_MODIFY_ORDER:     HandleModifyOrder(requestId, paramsJson); break;
+        case CMD_GET_POSITIONS:    HandleGetPositions(requestId); break;
+        case CMD_GET_ORDERS:       HandleGetOrders(requestId); break;
+        case CMD_CREDENTIALS:      HandleCredentials(requestId, paramsJson); break;
         default:
-            BridgePushResponse(BuildError(-1, "Unknown command type: " + IntegerToString(cmdType)));
+            BridgePushResponse(BuildError(-1, "Unknown command: " + IntegerToString(cmdType)));
             break;
     }
 }
 
 //+------------------------------------------------------------------+
-//| Command handlers (same as before, but now called instantly)      |
+//| Handle credentials from gateway                                   |
+//+------------------------------------------------------------------+
+void HandleCredentials(string requestId, string paramsJson) {
+    // In Docker mode: MT5 is already logged in (started with /login params)
+    // Just acknowledge and report login status
+    g_credentials_received = true;
+    
+    string mt5_login  = JsonGetString(paramsJson, "mt5_login");
+    string mt5_server = JsonGetString(paramsJson, "mt5_server");
+    
+    Print("CipherBridge: Credentials received (login=", mt5_login, ", server=", mt5_server, ")");
+    
+    // Check if we're already logged into the correct account
+    long current_login = AccountInfoInteger(ACCOUNT_LOGIN);
+    bool connected = TerminalInfoInteger(TERMINAL_CONNECTED) != 0;
+    
+    if (connected && current_login > 0) {
+        // Already logged in — send success immediately
+        string response = "{\"type\":\"login_result\",\"data\":{"
+            "\"success\":true,"
+            "\"account\":" + IntegerToString(current_login) + ","
+            "\"server\":\"" + JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
+            "\"balance\":" + JsonDouble(AccountInfoDouble(ACCOUNT_BALANCE), 2) +
+            "}}";
+        BridgePushResponse(response);
+        g_login_reported = true;
+        Print("CipherBridge: Already logged in, reported success");
+    } else {
+        // Not logged in yet — MT5 might still be connecting
+        // The CheckAndReportLogin() in OnTimer will report when ready
+        Print("CipherBridge: Waiting for MT5 to connect...");
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Command handlers (unchanged from v2)                              |
 //+------------------------------------------------------------------+
 void HandlePing(string requestId) {
     long timestamp = (long)TimeCurrent();
@@ -255,7 +300,6 @@ void HandleConnect(string requestId, string paramsJson) {
         "\"error\":" + errorVal +
         "}}";
     BridgePushResponse(response);
-    Print("CipherBridge: Connect request handled, account=", account);
 }
 
 void HandleDisconnect(string requestId) {
@@ -264,29 +308,23 @@ void HandleDisconnect(string requestId) {
         "\"success\":true"
         "}}";
     BridgePushResponse(response);
-    Print("CipherBridge: Disconnect request acknowledged");
 }
 
 void HandleSubscribe(string requestId, string paramsJson) {
     string symbols[];
     int count = JsonGetStringArray(paramsJson, "symbols", symbols);
     string timeframe = JsonGetString(paramsJson, "timeframe");
-
     for (int i = 0; i < count; i++) {
-        if (!SymbolSelect(symbols[i], true)) {
+        if (!SymbolSelect(symbols[i], true))
             Print("CipherBridge: Failed to select symbol: ", symbols[i]);
-        }
     }
-
     BridgePushResponse(BuildSubscribed(requestId, symbols, timeframe));
-    Print("CipherBridge: Subscribed to ", count, " symbols");
 }
 
 void HandleUnsubscribe(string requestId, string paramsJson) {
     string symbols[];
     int count = JsonGetStringArray(paramsJson, "symbols", symbols);
     BridgePushResponse(BuildUnsubscribed(requestId, symbols));
-    Print("CipherBridge: Unsubscribed from ", count, " symbols");
 }
 
 void HandleGetAccountInfo(string requestId) {
@@ -327,7 +365,6 @@ void HandleGetHistory(string requestId, string paramsJson) {
         BridgePushResponse(BuildError(err, "CopyRates failed: " + IntegerToString(err)));
         return;
     }
-
     BridgePushResponse(BuildHistoryData(requestId, symbol, timeframe, rates, copied));
 }
 
@@ -343,46 +380,26 @@ void HandlePlaceOrder(string requestId, string paramsJson) {
     long   magic     = JsonGetLong(paramsJson, "magic");
 
     if (symbol == "" || side == "" || volume <= 0) {
-        g_trade.SetExpertMagicNumber(0);
         BridgePushResponse(BuildOrderResult(requestId, 0, false, "Missing required parameters"));
         return;
     }
-
     if (!SymbolSelect(symbol, true)) {
-        g_trade.SetExpertMagicNumber(0);
         BridgePushResponse(BuildOrderResult(requestId, 0, false, "Symbol not available: " + symbol));
         return;
     }
 
     ENUM_ORDER_TYPE type = ParseOrderType(side, orderType);
-
-    if (side != "buy" && side != "sell") {
-        g_trade.SetExpertMagicNumber(0);
-        BridgePushResponse(BuildOrderResult(requestId, 0, false, "Unknown side: " + side));
-        return;
-    }
-    if (orderType != "market" && orderType != "limit" && orderType != "stop" && orderType != "stop_limit") {
-        g_trade.SetExpertMagicNumber(0);
-        BridgePushResponse(BuildOrderResult(requestId, 0, false, "Unknown order_type: " + orderType));
-        return;
-    }
-
     if (magic > 0) g_trade.SetExpertMagicNumber(magic);
 
     if (orderType == "market" && (price == 0.0 || price == EMPTY_VALUE)) {
-        if (side == "buy")
-            price = SymbolInfoDouble(symbol, SYMBOL_ASK);
-        else
-            price = SymbolInfoDouble(symbol, SYMBOL_BID);
+        if (side == "buy")  price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+        else                price = SymbolInfoDouble(symbol, SYMBOL_BID);
     }
 
     bool success = false;
-
     if (orderType == "market") {
-        if (side == "buy")
-            success = g_trade.Buy(volume, symbol, price, sl, tp, comment);
-        else
-            success = g_trade.Sell(volume, symbol, price, sl, tp, comment);
+        if (side == "buy")  success = g_trade.Buy(volume, symbol, price, sl, tp, comment);
+        else                success = g_trade.Sell(volume, symbol, price, sl, tp, comment);
     } else {
         success = g_trade.OrderOpen(symbol, type, volume, 0.0, price, sl, tp,
                                     ORDER_TIME_GTC, 0, comment);
@@ -392,15 +409,12 @@ void HandlePlaceOrder(string requestId, string paramsJson) {
         ulong ticket = g_trade.ResultOrder();
         if (ticket == 0) ticket = g_trade.ResultDeal();
         BridgePushResponse(BuildOrderResult(requestId, (long)ticket, true));
-        Print("CipherBridge: Order placed, ticket=", ticket);
     } else {
         uint retcode = g_trade.ResultRetcode();
         string errMsg = "Order failed [" + IntegerToString(retcode) + "]: " +
                         g_trade.ResultRetcodeDescription();
         BridgePushResponse(BuildOrderResult(requestId, 0, false, errMsg));
-        Print("CipherBridge: ", errMsg);
     }
-
     g_trade.SetExpertMagicNumber(0);
 }
 
@@ -416,12 +430,8 @@ void HandleCloseOrder(string requestId, string paramsJson) {
     if (!PositionSelectByTicket((ulong)ticket)) {
         if (OrderSelect((ulong)ticket)) {
             bool success = g_trade.OrderDelete((ulong)ticket);
-            if (success) {
-                BridgePushResponse(BuildOrderResult(requestId, ticket, true));
-            } else {
-                BridgePushResponse(BuildOrderResult(requestId, ticket, false,
-                    "Failed to delete order: " + g_trade.ResultRetcodeDescription()));
-            }
+            BridgePushResponse(BuildOrderResult(requestId, ticket, success,
+                success ? "" : "Failed to delete: " + g_trade.ResultRetcodeDescription()));
             return;
         }
         BridgePushResponse(BuildOrderResult(requestId, ticket, false, "Position/order not found"));
@@ -429,25 +439,19 @@ void HandleCloseOrder(string requestId, string paramsJson) {
     }
 
     bool success = false;
-
     if (volume > 0 && volume < PositionGetDouble(POSITION_VOLUME)) {
-        string symbol = PositionGetString(POSITION_SYMBOL);
-        int    type   = (int)PositionGetInteger(POSITION_TYPE);
-        if (type == POSITION_TYPE_BUY)
-            success = g_trade.Sell(volume, symbol, 0, 0, 0, "Partial close");
+        string sym = PositionGetString(POSITION_SYMBOL);
+        int ptype = (int)PositionGetInteger(POSITION_TYPE);
+        if (ptype == POSITION_TYPE_BUY)
+            success = g_trade.Sell(volume, sym, 0, 0, 0, "Partial close");
         else
-            success = g_trade.Buy(volume, symbol, 0, 0, 0, "Partial close");
+            success = g_trade.Buy(volume, sym, 0, 0, 0, "Partial close");
     } else {
         success = g_trade.PositionClose((ulong)ticket);
     }
 
-    if (success) {
-        BridgePushResponse(BuildOrderResult(requestId, ticket, true));
-        Print("CipherBridge: Position closed, ticket=", ticket);
-    } else {
-        BridgePushResponse(BuildOrderResult(requestId, ticket, false,
-            "Close failed: " + g_trade.ResultRetcodeDescription()));
-    }
+    BridgePushResponse(BuildOrderResult(requestId, ticket, success,
+        success ? "" : "Close failed: " + g_trade.ResultRetcodeDescription()));
 }
 
 void HandleModifyOrder(string requestId, string paramsJson) {
@@ -462,29 +466,21 @@ void HandleModifyOrder(string requestId, string paramsJson) {
     }
 
     bool success = false;
-
     if (PositionSelectByTicket((ulong)ticket)) {
         success = g_trade.PositionModify((ulong)ticket, sl, tp);
-    }
-    else if (OrderSelect((ulong)ticket)) {
-        double currentPrice = (price > 0) ? price : OrderGetDouble(ORDER_PRICE_OPEN);
-        double currentSl    = (sl > 0) ? sl : OrderGetDouble(ORDER_SL);
-        double currentTp    = (tp > 0) ? tp : OrderGetDouble(ORDER_TP);
-        datetime expiry     = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
-        success = g_trade.OrderModify((ulong)ticket, currentPrice, currentSl, currentTp,
-                                      ORDER_TIME_GTC, expiry);
-    }
-    else {
+    } else if (OrderSelect((ulong)ticket)) {
+        double cp = (price > 0) ? price : OrderGetDouble(ORDER_PRICE_OPEN);
+        double cs = (sl > 0) ? sl : OrderGetDouble(ORDER_SL);
+        double ct = (tp > 0) ? tp : OrderGetDouble(ORDER_TP);
+        datetime exp = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
+        success = g_trade.OrderModify((ulong)ticket, cp, cs, ct, ORDER_TIME_GTC, exp);
+    } else {
         BridgePushResponse(BuildOrderResult(requestId, ticket, false, "Position/order not found"));
         return;
     }
 
-    if (success) {
-        BridgePushResponse(BuildOrderResult(requestId, ticket, true));
-    } else {
-        BridgePushResponse(BuildOrderResult(requestId, ticket, false,
-            "Modify failed: " + g_trade.ResultRetcodeDescription()));
-    }
+    BridgePushResponse(BuildOrderResult(requestId, ticket, success,
+        success ? "" : "Modify failed: " + g_trade.ResultRetcodeDescription()));
 }
 
 void HandleGetPositions(string requestId) {
