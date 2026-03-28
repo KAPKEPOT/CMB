@@ -50,11 +50,14 @@ RUN mkdir -p /opt/mt5 && \
         -O /opt/mt5/mt5setup.exe
 
 # Install MT5 silently under Wine
-RUN xvfb-run wine64 /opt/mt5/mt5setup.exe /auto && \
+RUN timeout 120 xvfb-run wine64 /opt/mt5/mt5setup.exe /auto || true && \
     # Wait for installation to complete
-    sleep 30 && \
+    sleep 10 && \    
     # Kill any remaining Wine processes
-    wineserver -k || true
+    wineserver -k || true && \
+    # Verify MT5 was installed
+    ls "/root/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe" 2>/dev/null || \
+    echo "WARNING: MT5 may not have installed correctly"
 
 # Find MT5 installation path and data folder
 ENV MT5_INSTALL_DIR="/root/.wine/drive_c/Program Files/MetaTrader 5"
