@@ -1,15 +1,10 @@
 # cipher-mt5-bridge/docker/Dockerfile
-# Multi-stage build for MT5 Bridge container
-#
-# This container runs:
-#   1. Wine + MT5 terminal (headless via Xvfb)
-#   2. CipherBridge DLL loaded by the EA
-#   3. Launcher script that handles registration + credential delivery
+# Wine + MT5 terminal + CipherBridge DLL container
 #
 # Environment variables (injected by gateway):
 #   ACCOUNT_ID    — unique account identifier
 #   AUTH_TOKEN     — one-time auth token for registration
-#   GATEWAY_URL   — gateway base URL (e.g. https://gateway.rayonix.site)
+#   GATEWAY_URL   — gateway base URL (e.g. https://gateway.cipherbridge.cloud)
 
 FROM ubuntu:22.04
 
@@ -23,7 +18,6 @@ ENV PYTHONUNBUFFERED=1
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        wine64 \
         wine \
         xvfb \
         x11-utils \
@@ -35,6 +29,7 @@ RUN dpkg --add-architecture i386 && \
         python3-pip \
         unzip \
         xdotool \
+        procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies for launcher
@@ -42,7 +37,6 @@ RUN pip3 install --no-cache-dir requests websocket-client
 
 # Initialize Wine prefix
 RUN wineboot --init && \
-    # Wait for Wine to finish setup
     sleep 5
 
 # Download MT5 installer
@@ -51,22 +45,23 @@ RUN mkdir -p /opt/mt5 && \
         -O /opt/mt5/mt5setup.exe
 
 # Install MT5 silently under Wine
-RUN timeout 120 xvfb-run wine64 /opt/mt5/mt5setup.exe /auto || true && \
-    # Wait for installation to complete
-    sleep 10 && \    
-    # Kill any remaining Wine processes
+# MT5 installer can take a while — give it 5 minutes
+# The installer may "fail" from Wine's perspective but still install files
+RUN Xvfb :99 -screen 0 1024x768x16 & \
+    sleep 2 && \
+    timeout 300 wine64 /opt/mt5/mt5setup.exe /auto || true && \
+    sleep 15 && \
     wineserver -k || true && \
-    # Verify MT5 was installed
-    ls "/root/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe" 2>/dev/null || \
-    echo "WARNING: MT5 may not have installed correctly"
+    # Verify installation
+    echo "=== Checking MT5 installation ===" && \
+    find /root/.wine -name "terminal64.exe" -type f 2>/dev/null && \
+    echo "=== MT5 check complete ==="
 
-# Find MT5 installation path and data folder
+# Find MT5 installation path
 ENV MT5_INSTALL_DIR="/root/.wine/drive_c/Program Files/MetaTrader 5"
-ENV MT5_DATA_DIR="/root/.wine/drive_c/users/root/AppData/Roaming/MetaQuotes/Terminal"
 
-# Create necessary directories
-RUN mkdir -p "${MT5_INSTALL_DIR}" && \
-    mkdir -p /opt/bridge
+# Create bridge directory
+RUN mkdir -p /opt/bridge
 
 # Copy bridge files
 COPY dll/build/Release/CipherBridge.dll /opt/bridge/CipherBridge.dll
@@ -77,7 +72,7 @@ COPY docker/entrypoint.sh /opt/bridge/entrypoint.sh
 
 RUN chmod +x /opt/bridge/entrypoint.sh
 
-# Health check
+# Health check — look for terminal64.exe process, not a TCP port
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD pgrep -f terminal64.exe > /dev/null || exit 1
 

@@ -6,9 +6,9 @@
 #   1. Validate environment variables
 #   2. Start virtual display (Xvfb)
 #   3. Run launcher.py (HTTP register → WS credentials → write MT5 config)
-#   4. Deploy bridge files to MT5 data folder
+#   4. Deploy bridge files to MT5 directories
 #   5. Start MT5 terminal
-#   6. Monitor MT5 process, restart if it crashes
+#   6. Monitor via Wine process list (not PID — wine64 wrapper exits immediately)
 
 set -e
 
@@ -91,36 +91,57 @@ echo "✅ Credentials received: login=$MT5_LOGIN, server=$MT5_SERVER"
 rm -f "$CREDS_FILE"
 
 # ============================================================================
-# Step 4: Deploy bridge files to MT5
+# Step 4: Find MT5 and deploy bridge files
 # ============================================================================
 
 echo "→ Deploying bridge files..."
 
-# Find the MT5 data directory (hash-named folder)
-MT5_DATA_ROOT="$HOME/.wine/drive_c/users/root/AppData/Roaming/MetaQuotes/Terminal"
-MT5_DATA=$(find "$MT5_DATA_ROOT" -maxdepth 1 -type d -name "[A-F0-9]*" | head -1)
+# Find MT5 executable
+MT5_EXE=$(find "$HOME/.wine" -name "terminal64.exe" -type f 2>/dev/null | head -1)
 
-if [ -z "$MT5_DATA" ]; then
-    echo "⚠️  MT5 data folder not found, using install dir"
-    # Create a default data structure
-    MT5_DATA="$MT5_DATA_ROOT/default"
+if [ -z "$MT5_EXE" ]; then
+    echo "❌ MT5 terminal64.exe not found — installation may have failed"
+    echo "   Searching for any MT5 files..."
+    find "$HOME/.wine" -name "*.exe" -path "*MetaTrader*" 2>/dev/null || echo "   No MetaTrader files found"
+    exit 1
+fi
+
+MT5_INSTALL_DIR=$(dirname "$MT5_EXE")
+echo "   MT5 found at: $MT5_INSTALL_DIR"
+
+# With /portable flag, MT5 uses its install directory for data
+# Deploy files directly next to the terminal
+MT5_MQL_DIR="$MT5_INSTALL_DIR/MQL5"
+mkdir -p "$MT5_MQL_DIR/Libraries"
+mkdir -p "$MT5_MQL_DIR/Include"
+mkdir -p "$MT5_MQL_DIR/Experts"
+
+# Also check the AppData roaming directory (non-portable mode)
+MT5_DATA_ROOT="$HOME/.wine/drive_c/users/root/AppData/Roaming/MetaQuotes/Terminal"
+MT5_DATA=$(find "$MT5_DATA_ROOT" -maxdepth 1 -type d -name "[A-Fa-f0-9]*" 2>/dev/null | head -1)
+
+if [ -n "$MT5_DATA" ]; then
+    echo "   AppData folder found: $MT5_DATA"
     mkdir -p "$MT5_DATA/MQL5/Libraries"
     mkdir -p "$MT5_DATA/MQL5/Include"
     mkdir -p "$MT5_DATA/MQL5/Experts"
+    # Deploy to both locations
+    cp /opt/bridge/CipherBridge.dll "$MT5_DATA/MQL5/Libraries/"
+    cp /opt/bridge/CipherBridge.mqh "$MT5_DATA/MQL5/Include/"
+    cp /opt/bridge/CipherBridgeEA.mq5 "$MT5_DATA/MQL5/Experts/"
+    echo "   ✅ Files deployed to AppData"
 fi
 
-# Copy files
-cp /opt/bridge/CipherBridge.dll "$MT5_DATA/MQL5/Libraries/"
-cp /opt/bridge/CipherBridge.mqh "$MT5_DATA/MQL5/Include/"
-cp /opt/bridge/CipherBridgeEA.mq5 "$MT5_DATA/MQL5/Experts/"
-
-echo "✅ Bridge files deployed to $MT5_DATA"
+# Always deploy to install directory (portable mode)
+cp /opt/bridge/CipherBridge.dll "$MT5_MQL_DIR/Libraries/"
+cp /opt/bridge/CipherBridge.mqh "$MT5_MQL_DIR/Include/"
+cp /opt/bridge/CipherBridgeEA.mq5 "$MT5_MQL_DIR/Experts/"
+echo "✅ Bridge files deployed to $MT5_MQL_DIR"
 
 # ============================================================================
 # Step 5: Write WS URL for the DLL to read
 # ============================================================================
 
-# The DLL will read this file on BridgeInit instead of using EA input params
 echo "$WS_URL" > /tmp/bridge_ws_url.txt
 echo "$ACCOUNT_ID" > /tmp/bridge_account_id.txt
 echo "$AUTH_TOKEN" > /tmp/bridge_auth_token.txt
@@ -134,36 +155,31 @@ echo "✅ Bridge config written"
 
 echo "→ Starting MetaTrader 5..."
 
-MT5_EXE="$HOME/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe"
-
-if [ ! -f "$MT5_EXE" ]; then
-    # Try alternative path
-    MT5_EXE=$(find "$HOME/.wine" -name "terminal64.exe" -type f | head -1)
-fi
-
-if [ -z "$MT5_EXE" ]; then
-    echo "❌ MT5 terminal64.exe not found"
-    exit 1
-fi
-
-# Start MT5 with login credentials
+# Start MT5 — wine64 is just a wrapper, the actual process runs inside Wine
 wine64 "$MT5_EXE" \
     /login:$MT5_LOGIN \
     /password:$MT5_PASSWORD \
     /server:$MT5_SERVER \
     /portable &
 
-MT5_PID=$!
-echo "✅ MT5 started (PID: $MT5_PID)"
+echo "✅ MT5 launch command issued"
 echo "   Login:  $MT5_LOGIN"
 echo "   Server: $MT5_SERVER"
 
 # Wait for MT5 to initialize
-sleep 10
+sleep 15
 
 # ============================================================================
-# Step 7: Monitor MT5 process
+# Step 7: Monitor via Wine process list
 # ============================================================================
+
+# wine64 wrapper exits immediately — we can't track by PID.
+# Instead, check if terminal64.exe appears in Wine's process list.
+
+is_mt5_running() {
+    # Check if any terminal64.exe process is running under Wine
+    pgrep -f "terminal64.exe" > /dev/null 2>&1
+}
 
 echo ""
 echo "╔═══════════════════════════════════════════╗"
@@ -173,36 +189,52 @@ echo ""
 
 RESTART_COUNT=0
 MAX_RESTARTS=10
+CONSECUTIVE_FAILURES=0
 
 while true; do
-    # Check if MT5 is still running
-    if ! kill -0 $MT5_PID 2>/dev/null; then
+    if ! is_mt5_running; then
+        CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+
+        # Give Wine a grace period — it may still be starting
+        if [ $CONSECUTIVE_FAILURES -le 3 ]; then
+            echo "⏳ MT5 not detected yet (check $CONSECUTIVE_FAILURES/3)..."
+            sleep 10
+            continue
+        fi
+
         RESTART_COUNT=$((RESTART_COUNT + 1))
-        
+        CONSECUTIVE_FAILURES=0
+
         if [ $RESTART_COUNT -ge $MAX_RESTARTS ]; then
-            echo "❌ MT5 crashed $MAX_RESTARTS times — giving up"
+            echo "❌ MT5 failed $MAX_RESTARTS times — giving up"
+            echo "   Last Wine processes:"
+            ps aux | grep -i wine 2>/dev/null || true
             exit 1
         fi
-        
-        echo "⚠️  MT5 crashed (restart $RESTART_COUNT/$MAX_RESTARTS), restarting..."
+
+        echo "⚠️  MT5 not running (restart $RESTART_COUNT/$MAX_RESTARTS)"
         sleep 5
-        
+
         wine64 "$MT5_EXE" \
             /login:$MT5_LOGIN \
             /password:$MT5_PASSWORD \
             /server:$MT5_SERVER \
             /portable &
-        MT5_PID=$!
-        
-        echo "✅ MT5 restarted (PID: $MT5_PID)"
+
+        echo "✅ MT5 restart issued"
+        sleep 15
+    else
+        # MT5 is running — reset failure counter
+        CONSECUTIVE_FAILURES=0
     fi
-    
+
     # Check Xvfb
     if ! kill -0 $XVFB_PID 2>/dev/null; then
         echo "⚠️  Xvfb died, restarting..."
+        rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
         Xvfb :99 -screen 0 1024x768x16 &
         XVFB_PID=$!
     fi
-    
+
     sleep 10
 done
